@@ -15,6 +15,8 @@
 #include <cooperative_groups/reduce.h>
 namespace cg = cooperative_groups;
 
+constexpr float log2e = 1.4426950216293334961f;
+
 // Forward method for converting the input spherical harmonics
 // coefficients of each Gaussian to a simple RGB color.
 __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, bool* clamped)
@@ -167,9 +169,10 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	const float focal_x, float focal_y,
 	int* radii,
 	float2* points_xy_image,
-	float* depths,
+	// float* depths,
 	float* cov3Ds,
-	float* rgb,
+	float4* rgb_depth,
+	// float* rgb,
 	float4* conic_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
@@ -249,20 +252,27 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	if (colors_precomp == nullptr)
 	{
 		glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
-		rgb[idx * C + 0] = result.x;
-		rgb[idx * C + 1] = result.y;
-		rgb[idx * C + 2] = result.z;
+		// rgb[idx * C + 0] = result.x;
+		// rgb[idx * C + 1] = result.y;
+		// rgb[idx * C + 2] = result.z;
+		rgb_depth[idx].x = result.x;
+		rgb_depth[idx].y = result.y;
+		rgb_depth[idx].z = result.z;
+		rgb_depth[idx].w = p_view.z;
 	}
 
 	// Store some useful helper data for the next steps.
-	depths[idx] = p_view.z;
+	// depths[idx] = p_view.z;
 	radii[idx] = my_radius;
 	points_xy_image[idx] = point_image;
 	// Inverse 2D covariance and opacity neatly pack into one float4
 	float opacity = opacities[idx];
 
 
-	conic_opacity[idx] = { conic.x, conic.y, conic.z, opacity * h_convolution_scaling };
+	// conic_opacity[idx] = { conic.x, conic.y, conic.z, opacity * h_convolution_scaling };
+	float log2_opacity; // 这里为了对齐flash gs preprocess函数的输出
+	asm volatile("lg2.approx.f32 %0, %1;" : "=f"(log2_opacity) : "f"(opacity * h_convolution_scaling));
+	conic_opacity[idx] = { (-0.5f * log2e) * conic.x, -log2e * conic.y, (-0.5f * log2e) * conic.z, log2_opacity };
 
 
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
@@ -278,13 +288,14 @@ renderCUDA(
 	const uint32_t* __restrict__ point_list,
 	int W, int H,
 	const float2* __restrict__ points_xy_image,
-	const float* __restrict__ features,
+	const float4* __restrict__ features_depths,
+	// const float* __restrict__ features,
 	const float4* __restrict__ conic_opacity,
 	float* __restrict__ final_T,
 	uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ bg_color,
 	float* __restrict__ out_color,
-	const float* __restrict__ depths,
+	// const float* __restrict__ depths,
 	float* __restrict__ invdepth)
 {
 	// Identify current tile and associated min/max pixel range.
@@ -349,7 +360,8 @@ renderCUDA(
 			float2 xy = collected_xy[j];
 			float2 d = { xy.x - pixf.x, xy.y - pixf.y };
 			float4 con_o = collected_conic_opacity[j];
-			float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
+			// float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
+			float power = con_o.w + con_o.x * d.x * d.x + con_o.z * d.y * d.y + con_o.y * d.x * d.y;
 			if (power > 0.0f)
 				continue;
 
@@ -357,7 +369,9 @@ renderCUDA(
 			// Obtain alpha by multiplying with Gaussian opacity
 			// and its exponential falloff from mean.
 			// Avoid numerical instabilities (see paper appendix). 
-			float alpha = min(0.99f, con_o.w * exp(power));
+			// float alpha = min(0.99f, con_o.w * exp(power));
+			float alpha;
+			asm volatile("ex2.approx.ftz.f32 %0, %1;" : "=f"(alpha) : "f"(power));
 			if (alpha < 1.0f / 255.0f)
 				continue;
 			float test_T = T * (1 - alpha);
@@ -368,11 +382,15 @@ renderCUDA(
 			}
 
 			// Eq. (3) from 3D Gaussian splatting paper.
-			for (int ch = 0; ch < CHANNELS; ch++)
-				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
+			// for (int ch = 0; ch < CHANNELS; ch++)
+			// 	C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
+			C[0] += features_depths[collected_id[j]].x * alpha * T;
+			C[1] += features_depths[collected_id[j]].y * alpha * T;
+			C[2] += features_depths[collected_id[j]].z * alpha * T;
 
 			if(invdepth)
-			expected_invdepth += (1 / depths[collected_id[j]]) * alpha * T;
+			// expected_invdepth += (1 / depths[collected_id[j]]) * alpha * T;
+				expected_invdepth += (1.0f / features_depths[collected_id[j]].w) * alpha * T;
 
 			T = test_T;
 
@@ -404,13 +422,14 @@ void FORWARD::render(
 	const uint32_t* point_list,
 	int W, int H,
 	const float2* means2D,
-	const float* colors,
+	const float4* colors_depths,
+	// const float* colors,
 	const float4* conic_opacity,
 	float* final_T,
 	uint32_t* n_contrib,
 	const float* bg_color,
 	float* out_color,
-	float* depths,
+	// float* depths,
 	float* depth)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
@@ -418,13 +437,14 @@ void FORWARD::render(
 		point_list,
 		W, H,
 		means2D,
-		colors,
+		colors_depths,
+		// colors,
 		conic_opacity,
 		final_T,
 		n_contrib,
 		bg_color,
 		out_color,
-		depths, 
+		// depths, 
 		depth);
 }
 
@@ -446,9 +466,10 @@ void FORWARD::preprocess(int P, int D, int M,
 	const float tan_fovx, float tan_fovy,
 	int* radii,
 	float2* means2D,
-	float* depths,
+	// float* depths,
 	float* cov3Ds,
-	float* rgb,
+	float4* rgb_depth,
+	// float* rgb,
 	float4* conic_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
@@ -474,9 +495,10 @@ void FORWARD::preprocess(int P, int D, int M,
 		focal_x, focal_y,
 		radii,
 		means2D,
-		depths,
+		// depths,
 		cov3Ds,
-		rgb,
+		rgb_depth,
+		// rgb,
 		conic_opacity,
 		grid,
 		tiles_touched,

@@ -3,7 +3,8 @@
 #include "camera.h"
 #include "cuda.h"
 #include "cuda_runtime.h"
-#include <glm/glm.hpp>
+#include <Eigen/Dense>
+#include <Eigen/Geometry>
 
 #include <math.h>
 #include <cstdio>
@@ -38,8 +39,11 @@ namespace optisplat {
 struct GsConfig {
     std::string modelPath = "";
     std::string cameraPath = "";
-    bool bUseTensorCore = true;
     bool bRebuildBinaryCache = false;
+    int maxNumRenderedGaussians = 200000000;
+    bool bUseFlashGSExactIntersection = false;
+    bool bUseFlashGSPrefetchingPipeline = false;
+    bool bUseTensorCore = false;
     GsConfig() = default;
 };
 
@@ -52,9 +56,9 @@ class SceneData;
 template<int D>
 struct RichPoint;
 
-using Pos = glm::vec3;
-using Rot = glm::vec4;
-using Scale = glm::vec3;
+using Pos = Eigen::Vector3f;
+using Rot = Eigen::Vector4f;
+using Scale = Eigen::Vector3f;
 template <int D>
 using SHs = std::array<float, (D + 1) * (D + 1) * 3>;
 
@@ -157,6 +161,7 @@ public:
     float*  cudaCamPos = nullptr;
 
     int* cudaRadii = nullptr;
+    int* cudaCurrOffset = nullptr;
 
     SceneData<D> sceneData;
 
@@ -186,18 +191,6 @@ class SceneData {
 public:
 
     void initResource(std::string modelPath,  std::string cacheSavePath, bool rebuildBinaryCache);
-
-
-    int loadPly(
-        std::string filename, 
-        std::vector<Pos>& pos, 
-        std::vector<SHs<D>>& shs, 
-        std::vector<float>& opacity,
-        std::vector<Scale>& scale,
-        std::vector<Rot>& rot,
-        glm::vec3& minn,
-    	glm::vec3& maxx,
-	    glm::vec3& mean);
     
     int loadPlyFlexible(
         std::string filename, 
@@ -206,9 +199,11 @@ public:
         std::vector<float>& opacity,
         std::vector<Scale>& scale,
         std::vector<Rot>& rot,
-        glm::vec3& minn,
-    	glm::vec3& maxx,
-	    glm::vec3& mean);
+        Eigen::Vector3f& minn,
+    	Eigen::Vector3f& maxx,
+	    Eigen::Vector3f& mean,
+        bool mortonOrder = false
+    );
 
     void loadCache(std::string cacheDir);
 
@@ -224,6 +219,7 @@ public:
         safeCudaFree(cudaGaussianOpacity);
         safeCudaFree(cudaGaussianScale);
         safeCudaFree(cudaGaussianRot);
+        safeCudaFree(cudaGaussianCov3D);
     }
 
 public:
@@ -232,9 +228,10 @@ public:
     std::vector<float> gaussianOpacity;
     std::vector<Scale> gaussianScale;
     std::vector<Rot> gaussianRot;
+    std::vector<float> gaussianCov3D;
 
-    glm::vec3 sceneMin = {FLT_MAX, FLT_MAX, FLT_MAX};
-    glm::vec3 sceneMax = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    Eigen::Vector3f sceneMin = {FLT_MAX, FLT_MAX, FLT_MAX};
+    Eigen::Vector3f sceneMax = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
     std::string cacheName = "gaussian_splatting.cache";
 
     int numPoints = 0;
@@ -243,6 +240,7 @@ public:
     float*  cudaGaussianOpacity = nullptr;
     float*  cudaGaussianScale = nullptr;
     float*  cudaGaussianRot = nullptr;
+    float*  cudaGaussianCov3D = nullptr;
 };
 
 template<int D>

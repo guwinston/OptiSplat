@@ -5,8 +5,8 @@
 #include "camera.h"
 #include "render.h"
 #include <nlohmann/json.hpp>
-#include <glm/glm.hpp>
-#include <glm/gtc/quaternion.hpp>
+#include <Eigen/Dense>
+#include <Eigen/Geometry>
 
 #include <map>
 #include <unordered_map>
@@ -55,9 +55,9 @@ std::vector<GsCamera> Utils::readCamerasFromJson(std::string filePath) {
             cam.cy = item["cy"];
         }
 
-        cam.position.x = item["position"][0];
-        cam.position.y = item["position"][1];
-        cam.position.z = item["position"][2];
+        cam.position.x() = item["position"][0];
+        cam.position.y() = item["position"][1];
+        cam.position.z() = item["position"][2];
 
         if (item.contains("k1") && item.contains("k2") && item.contains("k3") && item.contains("k4")) {
             cam.k1 = item["k1"];
@@ -67,21 +67,12 @@ std::vector<GsCamera> Utils::readCamerasFromJson(std::string filePath) {
         }
         
         // 旋转处理
-        // JSON 通常是行优先存储: rotation[row][col]
-        // GLM 是列优先存储，索引方式为: matrix[col][row]
-        glm::mat3 rotationMatrix;
-        for (int i = 0; i < 3; ++i) {     // i 代表行 (Row)
-            for (int j = 0; j < 3; ++j) { // j 代表列 (Column)
-                // 将 JSON 的 (行i, 列j) 赋值给 GLM 的 [列j][行i]
-                rotationMatrix[j][i] = item["rotation"][i][j];
-            }
-        }
+        Eigen::Matrix3d rotationMatrix;
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                rotationMatrix(i, j) = item["rotation"][i][j];
 
-        glm::quat q = glm::quat_cast(rotationMatrix);
-        cam.quaternion.w = q.w;
-        cam.quaternion.x = q.x;
-        cam.quaternion.y = q.y;
-        cam.quaternion.z = q.z;
+        cam.quaternion = Eigen::Quaterniond(rotationMatrix).cast<float>();
 
         cameras.push_back(cam);
     }
@@ -104,20 +95,19 @@ void Utils::saveCamerasToJson(const std::vector<GsCamera>& cameras, const std::s
         item["fy"] = cam.fy;
         item["cx"] = cam.cx;
         item["cy"] = cam.cy;
-        item["position"] = { cam.position.x, cam.position.y, cam.position.z };
+        item["position"] = { cam.position.x(), cam.position.y(), cam.position.z() };
         
         item["k1"] = cam.k1;
         item["k2"] = cam.k2;
         item["k3"] = cam.k3;
         item["k4"] = cam.k4;
 
-        glm::quat q(cam.quaternion.w, cam.quaternion.x, cam.quaternion.y, cam.quaternion.z);
-        glm::mat3 rotationMatrix = glm::mat3_cast(q);
+        Eigen::Matrix3f rotationMatrix = cam.quaternion.toRotationMatrix();
 
         item["rotation"] = {
-            { rotationMatrix[0][0], rotationMatrix[1][0], rotationMatrix[2][0] }, // Row 0
-            { rotationMatrix[0][1], rotationMatrix[1][1], rotationMatrix[2][1] }, // Row 1
-            { rotationMatrix[0][2], rotationMatrix[1][2], rotationMatrix[2][2] }  // Row 2
+            { rotationMatrix(0,0), rotationMatrix(0,1), rotationMatrix(0,2) }, // Row 0
+            { rotationMatrix(1,0), rotationMatrix(1,1), rotationMatrix(1,2) }, // Row 1
+            { rotationMatrix(2,0), rotationMatrix(2,1), rotationMatrix(2,2) }  // Row 2
         };
 
         data.push_back(item);

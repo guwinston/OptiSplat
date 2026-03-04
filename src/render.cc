@@ -2,8 +2,10 @@
 #include "render.h"
 #include "utils.h"
 #include "camera.h"
-#include <glm/glm.hpp>
-#include <glm/gtc/quaternion.hpp>
+#include <Eigen/Dense>
+#include <Eigen/Geometry>
+// #include <glm/glm.hpp>
+// #include <glm/gtc/quaternion.hpp>
 
 #include <numeric>
 #include <filesystem>
@@ -37,6 +39,129 @@ std::function<char* (size_t N)> resizeFunctional(void** ptr, size_t& S, bool deb
 	};
 	return lambda;
 }
+
+// void computeCov3D(const glm::vec3 scale, float mod, const glm::vec4 rot, float* cov3D)
+// {
+//     // Create scaling matrix
+//     glm::mat3 S = glm::mat3(1.0f);
+//     S[0][0] = mod * scale.x;
+//     S[1][1] = mod * scale.y;
+//     S[2][2] = mod * scale.z;
+
+//     // Normalize quaternion to get valid rotation
+//     glm::vec4 q = rot;// / glm::length(rot);
+//     float r = q.x;
+//     float x = q.y;
+//     float y = q.z;
+//     float z = q.w;
+
+//     // Compute rotation matrix from quaternion
+//     glm::mat3 R = glm::mat3(
+//         1.f - 2.f * (y * y + z * z), 2.f * (x * y - r * z), 2.f * (x * z + r * y),
+//         2.f * (x * y + r * z), 1.f - 2.f * (x * x + z * z), 2.f * (y * z - r * x),
+//         2.f * (x * z - r * y), 2.f * (y * z + r * x), 1.f - 2.f * (x * x + y * y)
+//     );
+
+//     glm::mat3 M = S * R;
+
+//     // Compute 3D world covariance matrix Sigma
+//     glm::mat3 Sigma = glm::transpose(M) * M;
+
+//     // Covariance is symmetric, only store upper right
+//     cov3D[0] = Sigma[0][0];
+//     cov3D[1] = Sigma[0][1];
+//     cov3D[2] = Sigma[0][2];
+//     cov3D[3] = Sigma[1][1];
+//     cov3D[4] = Sigma[1][2];
+//     cov3D[5] = Sigma[2][2];
+// }
+
+// void computeCov3Ds(const glm::vec3* scales, float mod, const glm::vec4* rots, float* cov3Ds, int num) {
+// 	for (int i = 0; i < num; i++) {
+// 		computeCov3D(scales[i], mod, rots[i], cov3Ds + i * 6);
+// 	}
+// }
+
+// void computeCov3D(const Eigen::Vector3f& scale, float mod, const Eigen::Vector4f& rot, float* cov3D)
+// {
+//     // 1. 创建缩放矩阵 (利用 diagonal 特性更高效)
+//     // S = diag(mod * sx, mod * sy, mod * sz)
+//     Eigen::Matrix3f S = Eigen::Matrix3f::Zero();
+//     S.diagonal() = scale * mod;
+
+//     // 2. 从四元数构造旋转矩阵
+//     // 注意：输入 rot 是 (w, x, y, z) 还是 (x, y, z, w)? 
+//     // 根据你原代码 float r = q.x (即 w), x = q.y, y = q.z, z = q.w
+//     // 我们直接构造 Eigen 四元数。Eigen 构造函数顺序是 (w, x, y, z)
+//     Eigen::Quaternionf q(rot[0], rot[1], rot[2], rot[3]);
+    
+//     // 必须归一化以防止 NaN 和精度漂移，这是解决你之前问题的关键
+//     q.normalize(); 
+//     Eigen::Matrix3f R = q.toRotationMatrix();
+
+//     // 3. 计算中间矩阵 M
+//     // 原代码逻辑: M = S * R
+//     Eigen::Matrix3f M = S * R;
+
+//     // 4. 计算 3D 协方差矩阵 Sigma = M^T * M
+//     // Eigen 的 transpose() * M 在内部有高度优化
+//     Eigen::Matrix3f Sigma = M.transpose() * M;
+
+//     // 5. 存储上三角元素 (Symmetric Matrix)
+//     // 索引说明: Sigma(row, col)
+//     cov3D[0] = Sigma(0, 0);
+//     cov3D[1] = Sigma(0, 1);
+//     cov3D[2] = Sigma(0, 2);
+//     cov3D[3] = Sigma(1, 1);
+//     cov3D[4] = Sigma(1, 2);
+//     cov3D[5] = Sigma(2, 2);
+// }
+
+
+// 单个物体 3D 协方差
+void computeCov3D(const Eigen::Vector3f& scale, float mod, const Eigen::Vector4f& rot, float* cov3D)
+{
+    // Create scaling matrix
+    Eigen::Matrix3f S = Eigen::Matrix3f::Identity();
+    S(0,0) = mod * scale.x();
+    S(1,1) = mod * scale.y();
+    S(2,2) = mod * scale.z();
+
+    // Normalize quaternion to get valid rotation
+    Eigen::Vector4f q = rot; // / rot.norm();  // 如果需要归一化可以取消注释
+    float r = q.x();  // 对应原 glm: r = q.x
+    float x = q.y();  // 对应原 glm: x = q.y
+    float y = q.z();  // 对应原 glm: y = q.z
+    float z = q.w();  // 对应原 glm: z = q.w
+
+    // Compute rotation matrix from quaternion
+    Eigen::Matrix3f R;
+    R << 1.f - 2.f * (y*y + z*z), 2.f * (x*y - r*z), 2.f * (x*z + r*y),
+         2.f * (x*y + r*z), 1.f - 2.f * (x*x + z*z), 2.f * (y*z - r*x),
+         2.f * (x*z - r*y), 2.f * (y*z + r*x), 1.f - 2.f * (x*x + y*y);
+	R.transposeInPlace(); // 转置以匹配原 glm 代码的行主序访问
+
+    Eigen::Matrix3f M = S * R;
+
+    // Compute 3D world covariance matrix Sigma
+    Eigen::Matrix3f Sigma = M.transpose() * M;
+
+    // Covariance is symmetric, only store upper right
+    cov3D[0] = Sigma(0,0);
+    cov3D[1] = Sigma(0,1);
+    cov3D[2] = Sigma(0,2);
+    cov3D[3] = Sigma(1,1);
+    cov3D[4] = Sigma(1,2);
+    cov3D[5] = Sigma(2,2);
+}
+
+void computeCov3Ds(const Eigen::Vector3f* scales, float mod, const Eigen::Vector4f* rots, float* cov3Ds, int num) {
+    #pragma omp parallel for
+	for (int i = 0; i < num; i++) {
+        computeCov3D(scales[i], mod, rots[i], cov3Ds + i * 6);
+    }
+}
+
 
 std::shared_ptr<IGaussianRender> IGaussianRender::CreateRenderer(GsConfig config) {
 	int numVertex, shsDegree;
@@ -103,6 +228,7 @@ GaussianRender<D>::~GaussianRender() {
 	safeCudaFree(cudaProj);
 	safeCudaFree(cudaCamPos);
 	safeCudaFree(cudaRadii);
+	safeCudaFree(cudaCurrOffset);
 }
 
 template <int D>
@@ -122,13 +248,20 @@ float GaussianRender<D>::render(GsCamera& inCamera, float*& outImage, float*& ou
 		int M = (D + 1) * (D + 1);
 		float tanHalfFovx = inCamera.width / (2.0f * inCamera.fx);
 		float tanHalfFovy = inCamera.height / (2.0f * inCamera.fy);
+
+		Eigen::Vector3f cpuCamPosEigen = inCamera.position;
+		Eigen::Matrix3f cpuCamRotEigen = inCamera.quaternion.toRotationMatrix();
+		std::vector<float> cpuCamPos(cpuCamPosEigen.data(), cpuCamPosEigen.data() + 3);
+		std::vector<float> cpuCamRot(cpuCamRotEigen.data(), cpuCamRotEigen.data() + 9);
 		ScopeTimer timer("forward");
 		CHECK_CUDA(
-			numRendered = CudaRasterizer::Rasterizer::forward(
+			numRendered = CudaRasterizer::Rasterizer::forward2(
 			resizeFunctional(&cudaGeometryState, allocatedGeometryState),
 			resizeFunctional(&cudaBinningState, allocatedBinningState),
 			resizeFunctional(&cudaImageState, allocatedImageState),
-			P, D, M, 
+			P, D, M, config.maxNumRenderedGaussians,
+			config.bUseFlashGSExactIntersection, config.bUseFlashGSPrefetchingPipeline, config.bUseTensorCore,
+			cpuCamPos, cpuCamRot, inCamera.znear, inCamera.zfar, cudaCurrOffset,
 			cudaBackground,
 			inCamera.width, inCamera.height,
 			sceneData.cudaGaussianPoints,
@@ -138,7 +271,8 @@ float GaussianRender<D>::render(GsCamera& inCamera, float*& outImage, float*& ou
 			sceneData.cudaGaussianScale,
 			inCamera.scale,
 			sceneData.cudaGaussianRot,
-			nullptr,
+			// nullptr,
+			sceneData.cudaGaussianCov3D,
 			cudaView,
 			cudaProj,
 			cudaCamPos,
@@ -150,7 +284,35 @@ float GaussianRender<D>::render(GsCamera& inCamera, float*& outImage, float*& ou
 			cudaRadii,
 			debug), debug
 		);
-		cudaStreamSynchronize(stream);
+		// CHECK_CUDA(
+		// 	numRendered = CudaRasterizer::Rasterizer::forward(
+		// 	resizeFunctional(&cudaGeometryState, allocatedGeometryState),
+		// 	resizeFunctional(&cudaBinningState, allocatedBinningState),
+		// 	resizeFunctional(&cudaImageState, allocatedImageState),
+		// 	P, D, M, 
+		// 	cudaBackground,
+		// 	inCamera.width, inCamera.height,
+		// 	sceneData.cudaGaussianPoints,
+		// 	sceneData.cudaGaussianSHs,
+		// 	nullptr,
+		// 	sceneData.cudaGaussianOpacity,
+		// 	sceneData.cudaGaussianScale,
+		// 	inCamera.scale,
+		// 	sceneData.cudaGaussianRot,
+		// 	nullptr,
+		// 	// sceneData.cudaGaussianCov3D,
+		// 	cudaView,
+		// 	cudaProj,
+		// 	cudaCamPos,
+		// 	tanHalfFovx, tanHalfFovy,
+		// 	false,
+		// 	cudaImage,
+		// 	cudaAllMap,
+		// 	false,
+		// 	cudaRadii,
+		// 	debug), debug
+		// );
+		// cudaStreamSynchronize(stream);
 	}
 
 	outImage = cudaImage;
@@ -171,35 +333,70 @@ void GaussianRender<D>::initCuda(int device) {
 }
 
 
+// template <int D>
+// void GaussianRender<D>::setDefaultCamera(int fov, int width, int height) {
+//     defaultCamera.coordSystem = CameraCoordSystem::COLMAP;
+//     defaultCamera.width = width;
+//     defaultCamera.height = height;
+//     defaultCamera.fx = width / 2.f / std::tan(deg2Rad(fov / 2));
+//     defaultCamera.fy = defaultCamera.fx;
+//     defaultCamera.cx = width / 2.0f;
+//     defaultCamera.cy = height / 2.0f;
+//     defaultCamera.bgColor = glm::vec3(0.0f, 0.0f, 0.0f);
+
+//     glm::vec3 sceneCenter = (sceneData.sceneMax + sceneData.sceneMin) * 0.5f;
+//     glm::vec3 sceneSize = sceneData.sceneMax - sceneData.sceneMin;
+
+//     // 相机位置与朝向
+//     glm::vec3 cameraPos(sceneCenter.x, sceneCenter.y + sceneSize.y * 0.5f, sceneCenter.z + sceneSize.z * 0.5f);
+//     glm::vec3 cameraTarget = sceneCenter;
+    
+//     glm::vec3 up(0.0f, 1.0f, 0.0f);
+//     glm::vec3 forward = glm::normalize(cameraTarget - cameraPos);
+//     glm::vec3 right = glm::normalize(glm::cross(up, forward)); // GLM cross(x, y)
+//     glm::vec3 newUp = glm::cross(forward, right);
+
+//     // 构建旋转矩阵
+//     // 注意：GLM 矩阵构造是列主序，glm::mat3(col0, col1, col2)
+//     glm::mat3 R(right, newUp, forward);
+
+//     glm::quat quat = glm::quat_cast(R); 
+//     defaultCamera.quaternion = glm::quat_cast(R);
+//     defaultCamera.position = cameraPos;
+// }
+
 template <int D>
 void GaussianRender<D>::setDefaultCamera(int fov, int width, int height) {
     defaultCamera.coordSystem = CameraCoordSystem::COLMAP;
     defaultCamera.width = width;
     defaultCamera.height = height;
-    defaultCamera.fx = width / 2.f / std::tan(deg2Rad(fov / 2));
+    defaultCamera.fx = (float)width / 2.0f / std::tan(deg2Rad((float)fov / 2.0f));
     defaultCamera.fy = defaultCamera.fx;
-    defaultCamera.cx = width / 2.0f;
-    defaultCamera.cy = height / 2.0f;
-    defaultCamera.bgColor = glm::vec3(0.0f, 0.0f, 0.0f);
+    defaultCamera.cx = (float)width / 2.0f;
+    defaultCamera.cy = (float)height / 2.0f;
+    defaultCamera.bgColor = Eigen::Vector3f::Zero();
 
-    glm::vec3 sceneCenter = (sceneData.sceneMax + sceneData.sceneMin) * 0.5f;
-    glm::vec3 sceneSize = sceneData.sceneMax - sceneData.sceneMin;
+    Eigen::Vector3f sceneCenter = (sceneData.sceneMax + sceneData.sceneMin) * 0.5f;
+    Eigen::Vector3f sceneSize = sceneData.sceneMax - sceneData.sceneMin;
 
-    // 相机位置与朝向
-    glm::vec3 cameraPos(sceneCenter.x, sceneCenter.y + sceneSize.y * 0.5f, sceneCenter.z + sceneSize.z * 0.5f);
-    glm::vec3 cameraTarget = sceneCenter;
+    Eigen::Vector3f cameraPos(
+        sceneCenter.x(), 
+        sceneCenter.y() + sceneSize.y() * 0.5f, 
+        sceneCenter.z() + sceneSize.z() * 0.5f
+    );
+    Eigen::Vector3f cameraTarget = sceneCenter;
     
-    glm::vec3 up(0.0f, 1.0f, 0.0f);
-    glm::vec3 forward = glm::normalize(cameraTarget - cameraPos);
-    glm::vec3 right = glm::normalize(glm::cross(up, forward)); // GLM cross(x, y)
-    glm::vec3 newUp = glm::cross(forward, right);
+    Eigen::Vector3f up(0.0f, 1.0f, 0.0f);
+    Eigen::Vector3f forward = (cameraTarget - cameraPos).normalized();
+    Eigen::Vector3f right = up.cross(forward).normalized(); 
+    Eigen::Vector3f newUp = forward.cross(right);
 
-    // 构建旋转矩阵
-    // 注意：GLM 矩阵构造是列主序，glm::mat3(col0, col1, col2)
-    glm::mat3 R(right, newUp, forward);
+    Eigen::Matrix3f R;
+    R.col(0) = right;
+    R.col(1) = newUp;
+    R.col(2) = forward;
 
-    glm::quat quat = glm::quat_cast(R); 
-    defaultCamera.quaternion = glm::quat_cast(R);
+    defaultCamera.quaternion = Eigen::Quaternionf(R);
     defaultCamera.position = cameraPos;
 }
 
@@ -218,20 +415,20 @@ void GaussianRender<D>::setCudaImageParams(const GsCamera& camera, bool debug) {
 template <int D>
 void GaussianRender<D>::setCudaCameraParams(const GsCamera& camera, bool debug) 
 {
-	glm::vec3 background = camera.bgColor;
-    glm::mat4 viewMats = camera.getWorld2CameraMatrix();
-    glm::mat4 projMats = camera.getProjectionMatrix();
-	glm::vec3 camPos = camera.position;
+	Eigen::Vector3f background = camera.bgColor;
+    Eigen::Matrix4f viewMats = camera.getWorld2CameraMatrix();
+    Eigen::Matrix4f projMats = camera.getProjectionMatrix();
+	Eigen::Vector3f camPos = camera.position;
 
 	if (cudaView == nullptr || cudaProj == nullptr || cudaCamPos == nullptr || cudaBackground == nullptr) {
 		safeCudaFree(cudaView);
 		safeCudaFree(cudaProj);
 		safeCudaFree(cudaCamPos);
 		safeCudaFree(cudaBackground);
-		CHECK_CUDA(cudaMallocAsync((void**)&cudaView,    	sizeof(glm::mat4), stream), debug);
-		CHECK_CUDA(cudaMallocAsync((void**)&cudaProj,    	sizeof(glm::mat4), stream), debug);
-		CHECK_CUDA(cudaMallocAsync((void**)&cudaCamPos,  	sizeof(glm::vec3), stream), debug);
-		CHECK_CUDA(cudaMallocAsync((void**)&cudaBackground, sizeof(glm::vec3), stream), debug);
+		CHECK_CUDA(cudaMallocAsync((void**)&cudaView,    	sizeof(Eigen::Matrix4f), stream), debug);
+		CHECK_CUDA(cudaMallocAsync((void**)&cudaProj,    	sizeof(Eigen::Matrix4f), stream), debug);
+		CHECK_CUDA(cudaMallocAsync((void**)&cudaCamPos,  	sizeof(Eigen::Vector3f), stream), debug);
+		CHECK_CUDA(cudaMallocAsync((void**)&cudaBackground, sizeof(Eigen::Vector3f), stream), debug);
 	}
 	CHECK_CUDA(cudaMemcpyAsync(cudaBackground, 	&background, 	sizeof(background), cudaMemcpyHostToDevice, stream), debug);
 	CHECK_CUDA(cudaMemcpyAsync(cudaView, 		&viewMats, 		sizeof(viewMats), 	cudaMemcpyHostToDevice, stream), debug);
@@ -244,6 +441,7 @@ template <int D>
 void GaussianRender<D>::setCudaAuxiliary() {
 	int numPoints = sceneData.numPoints;
 	cudaMallocAsync((void**)&cudaRadii, sizeof(int) * numPoints, stream);
+	cudaMallocAsync((void**)&cudaCurrOffset, sizeof(int), stream);
 	cudaStreamSynchronize(stream);
 }
 
@@ -263,16 +461,18 @@ void SceneData<D>::initResource(std::string modelPath,  std::string cacheSavePat
 		std::vector<float> opacityVec;
 		std::vector<Scale> scaleVec;
 		std::vector<Rot> rotVec;
-		glm::vec3 minn, maxx, mean;
+		Eigen::Vector3f minn, maxx, mean;
 		int numElem = loadPlyFlexible(path, posVec, shsVec, opacityVec, scaleVec, rotVec, minn, maxx, mean);
-		sceneMin = glm::min(sceneMin, minn);
-		sceneMax = glm::max(sceneMax, maxx);
+		sceneMin = sceneMin.cwiseMin(minn);
+		sceneMax = sceneMax.cwiseMax(maxx);
 
 		gaussianPoints.insert(gaussianPoints.end(), posVec.begin(), posVec.end());
 		gaussianSHs.insert(gaussianSHs.end(), shsVec.begin(), shsVec.end());
 		gaussianOpacity.insert(gaussianOpacity.end(), opacityVec.begin(), opacityVec.end());
 		gaussianScale.insert(gaussianScale.end(), scaleVec.begin(), scaleVec.end());
 		gaussianRot.insert(gaussianRot.end(), rotVec.begin(), rotVec.end());
+		// gaussianCov3D.resize(numElem * 6);
+		// computeCov3Ds(scaleVec.data(), 1.0f, rotVec.data(), gaussianCov3D.data(), numElem);
 
 		numPoints += numElem;
 		GS_INFO("Loaded %d gaussians from %s elapsed %.2f ms", numPoints, path.c_str(), (float)(Utils::nowUs() - t0) / 1000);
@@ -281,6 +481,9 @@ void SceneData<D>::initResource(std::string modelPath,  std::string cacheSavePat
 	else {
 		loadCache(cacheSavePath);
 	}
+
+	gaussianCov3D.resize(numPoints * 6);
+	computeCov3Ds(gaussianScale.data(), 1.0f, gaussianRot.data(), gaussianCov3D.data(), numPoints);
 	
 	uploadDataToGPU();
 
@@ -299,9 +502,10 @@ int SceneData<D>::loadPlyFlexible(
 	std::vector<float>& opacityVec,
 	std::vector<Scale>& scaleVec,
 	std::vector<Rot>& rotVec,
-	glm::vec3& minn,
-	glm::vec3& maxx,
-	glm::vec3& mean
+	Eigen::Vector3f& minn,
+	Eigen::Vector3f& maxx,
+	Eigen::Vector3f& mean,
+	bool mortonOrder
 ) {
 	std::ifstream infile(filename, std::ios_base::binary);
 	if (!infile.good()){
@@ -386,9 +590,9 @@ int SceneData<D>::loadPlyFlexible(
 
 	std::vector<float> buffer(totalFloats * numPoints);
 	infile.read(reinterpret_cast<char*>(buffer.data()), totalFloats * numPoints * sizeof(float));
-	glm::dvec3 sumPos(0.0, 0.0, 0.0);
-	glm::vec3 minPos(FLT_MAX, FLT_MAX, FLT_MAX);
-	glm::vec3 maxPos(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+	Eigen::Vector3d sumPos(0.0, 0.0, 0.0);
+	Eigen::Vector3f minPos(FLT_MAX, FLT_MAX, FLT_MAX);
+	Eigen::Vector3f maxPos(-FLT_MAX, -FLT_MAX, -FLT_MAX);
 	for (int i = 0; i < numPoints; ++i) {
 		for (size_t j = 0; j < props.size(); ++j) {
 			size_t base = i * totalFloats;
@@ -405,23 +609,31 @@ int SceneData<D>::loadPlyFlexible(
             }
 		}
 		// must normalize quat of rot, otherwise the cov3d will be wrong!
-		float length2 = 0;
-		for (int j = 0; j < 4; j++) length2 += rotVec[i][j] * rotVec[i][j];
-		float length = sqrt(length2);
-		for (int j = 0; j < 4; j++) rotVec[i][j] = rotVec[i][j] / length;
+		// float length2 = 0;
+		// for (int j = 0; j < 4; j++) length2 += rotVec[i][j] * rotVec[i][j];
+		// float length = sqrt(length2);
+		// for (int j = 0; j < 4; j++) rotVec[i][j] = rotVec[i][j] / length;
+		// rotVec[i] = glm::normalize(rotVec[i]);
+		rotVec[i] = rotVec[i].normalized();
+		// glm::vec4 tmp(rotVec[i].x(), rotVec[i].y(), rotVec[i].z(), rotVec[i].w());
+		// tmp = glm::normalize(tmp);
+		// rotVec[i] = Eigen::Vector4f(tmp.x, tmp.y, tmp.z, tmp.w);
 
-		glm::vec3 curPos = posVec[i]; 
-		sumPos += glm::dvec3(curPos);
-		maxPos = glm::max(maxPos, curPos);
-		minPos = glm::min(minPos, curPos);
+		Eigen::Vector3f curPos = posVec[i]; 
+		sumPos += curPos.cast<double>();
+		maxPos = maxPos.cwiseMax(curPos);
+		minPos = minPos.cwiseMin(curPos);
 	}
 
 	// 3) Compute mean, bounding box, Morton order
-	glm::dvec3 avgPos = sumPos / double(numPoints);
-	mean = glm::vec3(avgPos);
+	Eigen::Vector3d avgPos = sumPos / double(numPoints);
+	mean = avgPos.cast<float>();
 	minn = minPos;
 	maxx = maxPos;
 
+	if (!mortonOrder) {
+		return numPoints;
+	}
 	std::vector<uint64_t> mortonCodes(numPoints);
     std::vector<int> indices(numPoints);
 	for (int i = 0; i < numPoints; i++) {
@@ -466,8 +678,8 @@ void SceneData<D>::saveCache(std::string cacheDir) {
     }
 
 	auto t0 = Utils::nowUs();
-	outfile.write(reinterpret_cast<const char*>(&sceneMin), sizeof(glm::vec3));
-	outfile.write(reinterpret_cast<const char*>(&sceneMax), sizeof(glm::vec3));
+	outfile.write(reinterpret_cast<const char*>(&sceneMin), sizeof(Eigen::Vector3f));
+	outfile.write(reinterpret_cast<const char*>(&sceneMax), sizeof(Eigen::Vector3f));
 	outfile.write(reinterpret_cast<const char*>(&numPoints), sizeof(numPoints));
 	outfile.write(reinterpret_cast<const char*>(gaussianPoints.data()), sizeof(Pos) * numPoints);
 	outfile.write(reinterpret_cast<const char*>(gaussianSHs.data()), sizeof(SHs<D>) * numPoints);
@@ -495,8 +707,8 @@ void SceneData<D>::loadCache(std::string cacheDir) {
 
 	GS_INFO("Loading cache from %s", cachePath.c_str());
 	auto t0 = Utils::nowUs();
-	infile.read(reinterpret_cast<char*>(&sceneMin), sizeof(glm::vec3));
-	infile.read(reinterpret_cast<char*>(&sceneMax), sizeof(glm::vec3));
+	infile.read(reinterpret_cast<char*>(&sceneMin), sizeof(Eigen::Vector3f));
+	infile.read(reinterpret_cast<char*>(&sceneMax), sizeof(Eigen::Vector3f));
 	infile.read(reinterpret_cast<char*>(&numPoints), sizeof(numPoints));
 	gaussianPoints.resize(numPoints);
 	gaussianSHs.resize(numPoints);
@@ -525,6 +737,7 @@ void SceneData<D>::uploadDataToGPU() {
 	cudaGaussianOpacity = (float*)cudaMallocAndMemcpy((float*)gaussianOpacity.data(), numPoints, stream);
 	cudaGaussianScale = (float*)cudaMallocAndMemcpy((Scale*)gaussianScale.data(), numPoints, stream);
 	cudaGaussianRot = (float*)cudaMallocAndMemcpy((Rot*)gaussianRot.data(), numPoints, stream);
+	cudaGaussianCov3D = (float*)cudaMallocAndMemcpy((float*)gaussianCov3D.data(), numPoints * 6, stream);
 }
 
 

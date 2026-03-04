@@ -1,9 +1,6 @@
 #include "camera.h"
-
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/quaternion.hpp>
-#include <glm/gtc/type_ptr.hpp>
+#include <Eigen/Dense>
+#include <Eigen/Geometry>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -11,79 +8,109 @@
 
 namespace optisplat {
 
-glm::mat4 GsCamera::getPerspectiveMatrix() const {
+void GsCamera::setResolution(int targetW, int targetH) {
+    if (targetW <= 0 || targetH <= 0)
+        return;
+
+    float scaleX = static_cast<float>(targetW) / static_cast<float>(width);
+    float scaleY = static_cast<float>(targetH) / static_cast<float>(height);
+
+    if (fx > 0.0f) fx *= scaleX;
+    if (fy > 0.0f) fy *= scaleY;
+
+    cx *= scaleX;
+    cy *= scaleY;
+
+    width  = targetW;
+    height = targetH;
+}
+
+void GsCamera::rescaleResolution(float scaleFactor) {
+    if (scaleFactor <= 0.0f)
+        return;
+
+    int targetW = static_cast<int>(std::round(width  / scaleFactor));
+    int targetH = static_cast<int>(std::round(height / scaleFactor));
+
+    setResolution(targetW, targetH);
+}
+
+Eigen::Matrix4f GsCamera::getPerspectiveMatrix() const {
     const float xScale = fx / (width / 2.0f);
     const float yScale = fy / (height / 2.0f);
     const float dx = 2.0f * (cx / width) - 1.0f;
     const float dy = 2.0f * (cy / height) - 1.0f;
     
-    float zsign	 = 1.0;
+    float zsign = 1.0f;
     float zf = zfar;
     float zn = znear;
 
-    // GLM 矩阵构造是列主序: mat4(col0, col1, col2, col3)
-    return glm::mat4(
-        xScale, 0.0f,   0.0f,                   0.0f,   // col 0
-        0.0f,   yScale, 0.0f,                   0.0f,   // col 1
-        dx,     dy,     zsign * zf / (zf - zn), zsign,  // col 2
-        0.0f,   0.0f,   -(zn * zf) / (zf - zn), 0.0f    // col 3
-    );
+    Eigen::Matrix4f m;
+    m << xScale, 0.0f,   dx,                     0.0f,                      // Row 0
+         0.0f,   yScale, dy,                     0.0f,                      // Row 1
+         0.0f,   0.0f,   zsign * zf / (zf - zn), -(zn * zf) / (zf - zn),    // Row 2
+         0.0f,   0.0f,   zsign,                  0.0f;                      // Row 3
+    return m;
 }
 
-glm::mat4 GsCamera::getOrthographicMatrix() const {
+Eigen::Matrix4f GsCamera::getOrthographicMatrix() const {
     // 正交投影不用进行齐次除法，正交投影矩阵直接转换相机坐标转换到ndc空间，而透视投影还需要进行齐次除法才能转到ndc空间
     // 推导：u = sx * x + cx, ==> ndc_x = (u / width) * 2 - 1 = (2 * sx / width) * x + (2 * cx / width) - 1; 
     // 因此 xscale = 2 * sx / width, dx = 2 * cx / width - 1, yscale和dy同理
     float xScale = fx / (width / 2.0f);
     float yScale = fy / (height / 2.0f);
-    float dx = 2.0f * (cx / width) - 1.0f;
-    float dy = 2.0f * (cy / height) - 1.0f;
+    float dx = 2.0f * (cx / (float)width) - 1.0f;
+    float dy = 2.0f * (cy / (float)height) - 1.0f;
     float zn = znear;
     float zf = zfar;
 
-    return glm::mat4(
-        xScale, 0.0f,   0.0f,          0.0f, // col 0
-        0.0f,   yScale, 0.0f,          0.0f, // col 1
-        0.0f,   0.0f,   1.0f/(zf-zn),  0.0f, // col 2
-        dx,     dy,     -zn/(zf-zn),   1.0f  // col 3
-    );
+    Eigen::Matrix4f m;
+    m << xScale, 0.0f,   0.0f,          dx,           // Row 0
+         0.0f,   yScale, 0.0f,          dy,           // Row 1
+         0.0f,   0.0f,   1.0f/(zf-zn), -zn/(zf-zn),   // Row 2
+         0.0f,   0.0f,   0.0f,          1.0f;         // Row 3
+
+    return m;
 }
 
-glm::mat4 GsCamera::getProjectionMatrix() const {
+Eigen::Matrix4f GsCamera::getProjectionMatrix() const {
     // Proj = Perspective * View
     return getPerspectiveMatrix() * getWorld2CameraMatrix();
 }
 
 
-glm::mat4 GsCamera::getWorld2CameraMatrix() const {
-    // 1. 归一化并构造旋转矩阵 (注意 GLM quat 构造顺序: w, x, y, z)
-    glm::quat q = glm::normalize(glm::quat(quaternion.w, quaternion.x, quaternion.y, quaternion.z));
-    glm::mat3 R = glm::mat3_cast(q); 
+Eigen::Matrix4f GsCamera::getWorld2CameraMatrix() const {
+    // 1. 归一化并构造旋转矩阵
+    Eigen::Quaternionf q = quaternion.normalized();
+    Eigen::Matrix3f R = q.toRotationMatrix();
     
-    // 2. 优化：不直接使用 inverse()。
-    // W2C 矩阵的旋转部分是 C2W 的转置，位移部分是 -R^T * t
-    glm::mat3 Rt = glm::transpose(R);
-    glm::vec3 t_inv = -Rt * position;
+    // 2. 计算世界到相机的变换
+    // W2C 的旋转部分是 C2W 的转置 (Rt)，位移部分是 -Rt * position
+    Eigen::Matrix3f Rt = R.transpose();
+    Eigen::Vector3f t_inv = -Rt * position;
 
-    // 3. 组合成 4x4 矩阵 (列主序填充)
-    return glm::mat4(
-        Rt[0][0], Rt[0][1], Rt[0][2], 0.0f, // col 0
-        Rt[1][0], Rt[1][1], Rt[1][2], 0.0f, // col 1
-        Rt[2][0], Rt[2][1], Rt[2][2], 0.0f, // col 2
-        t_inv.x,  t_inv.y,  t_inv.z,  1.0f  // col 3
-    );
+    // 3. 组合成 4x4 矩阵
+    Eigen::Matrix4f m = Eigen::Matrix4f::Identity();
+    
+    // 填充左上角 3x3 旋转矩阵部分
+    m.block<3, 3>(0, 0) = Rt;
+    
+    // 填充右上角 3x1 平移向量部分
+    m.block<3, 1>(0, 3) = t_inv;
+    
+    return m;
 }
 
-glm::mat3 GsCamera::getIntrinsicMatrix() const {
-    // 列主序构造
-    return glm::mat3(
-        fx,   0.0f, 0.0f, // col 0
-        0.0f, fy,   0.0f, // col 1
-        cx,   cy,   1.0f  // col 2
-    );
+Eigen::Matrix3f GsCamera::getIntrinsicMatrix() const {
+    Eigen::Matrix3f K;
+    K << fx,   0.0f, cx,
+         0.0f, fy,   cy,
+         0.0f, 0.0f, 1.0f;
+
+    return K;
 }
 
-GsCamera createCamera(glm::vec3 position, glm::quat quaternion, int width, int height, float fov) {
+GsCamera createCamera(Eigen::Vector3f position, Eigen::Quaternionf quaternion, int width, int height, float fov) {
     GsCamera camera;
     camera.position = position;
     camera.quaternion = quaternion;

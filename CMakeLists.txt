@@ -114,6 +114,7 @@ target_include_directories(optisplat PRIVATE
 	${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES} 
 	${CMAKE_CURRENT_LIST_DIR}/third_party
 	${CMAKE_CURRENT_LIST_DIR}/third_party/glm
+	${CMAKE_CURRENT_LIST_DIR}/third_party/eigen-3.4.0
 	${GS_INCLUDES}
 )
 
@@ -139,6 +140,7 @@ target_include_directories(optisplat_test PRIVATE
 	${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
 	${CMAKE_CURRENT_LIST_DIR}/third_party
 	${CMAKE_CURRENT_LIST_DIR}/third_party/glm
+	${CMAKE_CURRENT_LIST_DIR}/third_party/eigen-3.4.0
 	${GLAD_DIR}/include
 )
 

@@ -1,0 +1,25 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "CUDA C++: Launch",
+            "type": "cuda-gdb",
+            "request": "launch",
+
+            "program": "${workspaceFolder}/build/optisplat_test",
+            "cwd": "${workspaceFolder}",
+
+            "args": [],
+            "stopAtEntry": false,
+
+            "environment": [],
+            "externalConsole": false
+        },
+        {
+            "name": "CUDA C++: Attach",
+            "type": "cuda-gdb",
+            "request": "attach",
+            "processId": "${command:pickProcess}"
+        }
+    ]
+}

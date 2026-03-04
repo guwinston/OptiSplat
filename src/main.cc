@@ -15,38 +15,48 @@ using namespace optisplat;
 int main(int argc, char** argv) {
     float m0 = Utils::nowGPUMB();
 
-    bool debug = true;
-    bool bRunViewer = true;
+    bool debug = false;
+    bool testPerformance = true;
+    bool bRunViewer = false;
 	GsConfig config;
     config.modelPath = "/mnt/e/Dataset/GaussianSplattingModels/bicycle/point_cloud/iteration_30000/point_cloud.ply";
     config.cameraPath = "/mnt/e/Dataset/GaussianSplattingModels/bicycle/cameras.json";
     config.bRebuildBinaryCache = false;
+    config.bUseFlashGSExactIntersection = true;
+    config.bUseFlashGSPrefetchingPipeline = false;
     config.bUseTensorCore = false;
 
     std::vector<GsCamera> cameras = Utils::readCamerasFromJson(config.cameraPath);
     std::shared_ptr<IGaussianRender> renderer = IGaussianRender::CreateRenderer(config);
     if (bRunViewer) {
-        return runViewer(renderer, cameras, debug);
+        return runViewer(renderer, cameras, -1, debug);
     }
 
     ProgressBar progress(cameras.size(), "Rendering");
     float time = 0;
     float* outImage = nullptr;
     float* outAllmap = nullptr;
+    GsCamera camera = cameras[0];
+    if (testPerformance)
+        for (int i = 0; i < 10; i++)
+            renderer->render(camera, outImage, outAllmap, debug);
     for (int i = 0; i < cameras.size(); i++) {
         auto t0 = Utils::nowUs();
-        auto camera = cameras[i];
+        camera = cameras[i];
+        camera.rescaleResolution(4);
+        // camera.setResolution(1920, 1080);
         float numRendered = renderer->render(camera, outImage, outAllmap, debug);
         auto t1 = Utils::nowUs();
         time += (t1-t0)/ 1000.0f; // Convert to milliseconds
-        progress.show_progress(i+1, (t1-t0) / 1000, numRendered);
-        break;
+        // progress.show_progress(i+1, (t1-t0) / 1000, numRendered);
+        // break;
     }
+    progress.close();
 
     std::vector<std::string> filenames = { "output/output.jpg" };
-    Utils::saveImages(outImage, 1, cameras.back().height, cameras.back().width, filenames);
-    Utils::saveAllMaps(outAllmap, 1, cameras.back().height, cameras.back().width, filenames);
-    progress.close();
+    Utils::saveImages(outImage, 1, camera.height, camera.width, filenames);
+    Utils::saveAllMaps(outAllmap, 1, camera.height, camera.width, filenames);
+    Utils::saveCudaArrayToBin("output/output.bin" , outImage, camera.height * camera.width * 4);
     std::cout << "Average time: " << time / cameras.size() << " ms" << std::endl;
     std::cout << "Memory usage: " << Utils::nowGPUMB() - m0 << " MB" << std::endl;
     

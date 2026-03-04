@@ -11,8 +11,8 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 
-#include <glm/gtc/quaternion.hpp>
-#include <glm/gtx/quaternion.hpp>
+#include <Eigen/Dense>
+#include <Eigen/Geometry>
 
 namespace optisplat {
 
@@ -40,10 +40,10 @@ void updateCameraPose(GsCamera& cam, GLFWwindow* window, float deltaTime,
                       double& lastX, double& lastY, float scrollDelta) {
     
     // 从四元数推导当前局部坐标系的基向量
-    glm::mat3 rotMat = glm::mat3_cast(cam.quaternion);
-    glm::vec3 right   = rotMat[0]; // 第一列：右向量
-    glm::vec3 up      = rotMat[1]; // 第二列：上向量
-    glm::vec3 forward = rotMat[2]; // 第三列：前向量
+    Eigen::Matrix3f rotMat = cam.quaternion.toRotationMatrix();
+    Eigen::Vector3f right   = rotMat.col(0); // 第一列：右向量
+    Eigen::Vector3f up      = rotMat.col(1); // 第二列：上向量
+    Eigen::Vector3f forward = rotMat.col(2); // 第三列：前向量
 
     // 1. 键盘 WASD 平移逻辑
     float velocity = moveSpeed * deltaTime;
@@ -68,11 +68,11 @@ void updateCameraPose(GsCamera& cam, GLFWwindow* window, float deltaTime,
         // 左键修改旋转 (Yaw & Pitch)
         if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
             // 绕世界坐标系 Y 轴进行水平旋转 (Yaw)
-            glm::quat yaw = glm::angleAxis(-deltaX * mouseSensitivity, glm::vec3(0, 1, 0));
+            Eigen::AngleAxisf yaw(-deltaX * mouseSensitivity, Eigen::Vector3f(0.f, 1.f, 0.f));
             // 绕相机局部坐标系 Right 轴进行垂直旋转 (Pitch)
-            glm::quat pitch = glm::angleAxis(-deltaY * mouseSensitivity, right);
+            Eigen::AngleAxisf pitch(-deltaY * mouseSensitivity, right);
             
-            cam.quaternion = glm::normalize(yaw * pitch * cam.quaternion);
+            cam.quaternion = (Eigen::Quaternionf(yaw) * Eigen::Quaternionf(pitch) * cam.quaternion).normalized();
         }
         
         // 右键进行平移 (Pan)

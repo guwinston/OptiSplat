@@ -33,6 +33,36 @@ public:
         return usedMem;
     }
 
+    template<typename T>
+    static bool saveCpuArrayToBin(const std::string& fileName, const T* data, size_t count) {
+        std::ofstream out(fileName, std::ios::binary);
+        if (!out) return false;
+
+        out.write(reinterpret_cast<const char*>(data), count * sizeof(T));
+        std::cout << "Cpu raw data has been saved to " << fileName << std::endl;
+
+        return out.good();
+    }
+
+    template<typename T>
+    static bool saveCudaArrayToBin(const std::string& fileName, const T* deviceData, size_t count) {
+        std::vector<T> hostBuffer(count);
+
+        cudaError_t err = cudaMemcpy(hostBuffer.data(), deviceData, count * sizeof(T), cudaMemcpyDeviceToHost);
+
+        if (err != cudaSuccess)
+            return false;
+
+        std::ofstream out(fileName, std::ios::binary);
+        if (!out) return false;
+
+        out.write(reinterpret_cast<const char*>(hostBuffer.data()), count * sizeof(T));
+        std::cout << "Cuda raw data has been saved to " << fileName << std::endl;
+
+        return out.good();
+
+    }
+
     static std::vector<GsCamera> readCamerasFromJson(std::string filePath);
     
     static void saveCamerasToJson(const std::vector<GsCamera>& cameras, const std::string& filePath);

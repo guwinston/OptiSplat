@@ -1,7 +1,7 @@
 #pragma once
 
-#include <glm/glm.hpp>
-#include <glm/gtc/quaternion.hpp>
+#include <Eigen/Dense>
+#include <Eigen/Geometry>
 
 #include <string>
 #include <vector>
@@ -61,8 +61,8 @@ struct GsCamera {
     CameraCoordSystem coordSystem = CameraCoordSystem::COLMAP;
     
     // --- Camera Extrinsics
-    glm::vec3 position{0.0f, 0.0f, 0.0f}; 
-    glm::quat quaternion{1.0f, 0.0f, 0.0f, 0.0f}; // (w, x, y, z)
+    Eigen::Vector3f position{0.0f, 0.0f, 0.0f};
+    Eigen::Quaternionf quaternion{1.0f, 0.0f, 0.0f, 0.0f}; // (w, x, y, z)
 
     // --- Camera Intrinsics ---
     int width = 1920;
@@ -78,23 +78,24 @@ struct GsCamera {
     float k1 = 0.0f, k2 = 0.0f, k3 = 0.0f, k4 = 0.0f;
 
     // --- Rendering Information ---
-    glm::vec3 bgColor{0.0f, 0.0f, 0.0f}; // background color
+    Eigen::Vector3f bgColor{0.0f, 0.0f, 0.0f}; // background color
     float scale = 1.0f; // scale factor of gaussian ellipsoid
     int cameraId = 0;
     std::string imageName = "";
 
-    glm::mat4 getPerspectiveMatrix() const;
-    glm::mat4 getOrthographicMatrix() const;
-    glm::mat4 getProjectionMatrix() const;
-    glm::mat4 getWorld2CameraMatrix() const;
-    glm::mat3 getIntrinsicMatrix() const;
-
+    Eigen::Matrix4f getPerspectiveMatrix() const;
+    Eigen::Matrix4f getOrthographicMatrix() const;
+    Eigen::Matrix4f getProjectionMatrix() const;
+    Eigen::Matrix4f getWorld2CameraMatrix() const;
+    Eigen::Matrix3f getIntrinsicMatrix() const;
+    void setResolution(int targetW, int targetH);
+    void rescaleResolution(float scaleFactor);
     bool isOrthographic() const { return model == CameraModel::ORTHOGRAPHIC; }
     bool isFisheye() const      { return model == CameraModel::FISHEYE; }
     bool isPerspective() const  { return model == CameraModel::PINHOLE; }
 };
 
-GsCamera createCamera(glm::vec3 position, glm::quat quaternion, int width, int height, float fov);
+GsCamera createCamera(Eigen::Vector3f position, Eigen::Quaternionf quaternion, int width, int height, float fov);
 
 float fov2focal(float fovRadian, float pixels);
 
