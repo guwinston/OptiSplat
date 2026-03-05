@@ -25,7 +25,7 @@ namespace TCGS
         float4* conic_opacity,
         float* final_T,
         uint* n_contrib,
-        const float* bg_color,
+        const float3 bg_color,
         float* out_color,
         float* depth
     );

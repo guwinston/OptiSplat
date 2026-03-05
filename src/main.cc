@@ -24,7 +24,7 @@ int main(int argc, char** argv) {
     config.bRebuildBinaryCache = false;
     config.bUseFlashGSExactIntersection = true;
     config.bUseFlashGSPrefetchingPipeline = false;
-    config.bUseTensorCore = false;
+    config.bUseTensorCore = true;
 
     std::vector<GsCamera> cameras = Utils::readCamerasFromJson(config.cameraPath);
     std::shared_ptr<IGaussianRender> renderer = IGaussianRender::CreateRenderer(config);

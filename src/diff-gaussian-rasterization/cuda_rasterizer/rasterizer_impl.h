@@ -29,7 +29,6 @@ namespace CudaRasterizer
 	struct GeometryState
 	{
 		size_t scan_size;
-		// float* depths;
 		char* scanning_space;
 		bool* clamped;
 		int* internal_radii;
@@ -37,7 +36,6 @@ namespace CudaRasterizer
 		float* cov3D;
 		float4* conic_opacity;
 		float4* rgb_depth;
-		// float* rgb;
 		uint32_t* point_offsets;
 		uint32_t* tiles_touched;
 

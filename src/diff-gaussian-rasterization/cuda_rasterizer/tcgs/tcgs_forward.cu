@@ -159,12 +159,11 @@ __global__ void renderCUDA_TCGS(
     const uint32_t* __restrict__ point_list,
     int width, int height,
     const float2* __restrict__ points_xy_image,
-    // const uint2* __restrict__ features,
     const float4* __restrict__ features,
     const float4* __restrict__ conic_opacity,
     float* __restrict__ final_T,
     uint32_t* __restrict__ n_contrib,
-    const float* __restrict__ bg_color,
+    const float3 __restrict__ bg_color,
     float* __restrict__ out_color,
     float* __restrict__ invdepth
 ) 
@@ -228,7 +227,6 @@ __global__ void renderCUDA_TCGS(
             float4 conics = conic_opacity[coll_id];
             float2 means = points_xy_image[coll_id];
             gaussian_vec = gs2vec(conics, means, pixf_mid);
-            // channel = features[coll_id];
             float4 color = features[coll_id];
             channel = make_uint2(float22reg(color.x, color.y), float22reg(color.z, 1.0f/color.w));
         }
@@ -280,9 +278,9 @@ __global__ void renderCUDA_TCGS(
         half2 BDh = uint2half2(RGBD.y);
         final_T[pix_id] = Tf;
 
-        out_color[pix_id * 4 + 0] = __half2float(RGh.x) + Tf * bg_color[0];
-        out_color[pix_id * 4 + 1] = __half2float(RGh.y) + Tf * bg_color[1];
-        out_color[pix_id * 4 + 2] = __half2float(BDh.x) + Tf * bg_color[2];
+        out_color[pix_id * 4 + 0] = __half2float(RGh.x) + Tf * bg_color.x;
+        out_color[pix_id * 4 + 1] = __half2float(RGh.y) + Tf * bg_color.y;
+        out_color[pix_id * 4 + 2] = __half2float(BDh.x) + Tf * bg_color.z;
         out_color[pix_id * 4 + 3] = 1.0f - Tf;
         if(invdepth)
             invdepth[pix_id] = __half2float(BDh.y);
@@ -306,7 +304,7 @@ void TCGS::renderCUDA_Forward(
     float4* conic_opacity,
     float* final_T,
     uint* n_contrib,
-    const float* bg_color,
+    const float3 bg_color,
     float* out_color,
     float* depth
 )

@@ -250,9 +250,9 @@ __global__ void preprocessCUDA(
 	const glm::vec3* __restrict__ positions,
 	const float* __restrict__ opacities,
 	const shs_deg3_t* __restrict__ shs,
-	glm::mat4 viewmatrix,
-	glm::mat4 projmatrix,
-	glm::vec3 cam_position,
+	const glm::mat4 viewmatrix,
+	const glm::mat4 projmatrix,
+	const glm::vec3 cam_position,
 	const int W, int H,
 	int block_x, int block_y,
 	const float tan_fovx, float tan_fovy,
@@ -289,7 +289,7 @@ __global__ void preprocessCUDA(
 		do {
 			// Perform near culling, quit if outside.
 			p_orig = positions[idx_vec];
-			p_view = transformPoint4x3(p_orig, (float*)&viewmatrix);
+			p_view = transformPoint4x3(p_orig, (const float*)&viewmatrix);
 			if (p_view.z <= 0.2f)
 				break;
 			opacity = opacities[idx_vec];
@@ -297,7 +297,7 @@ __global__ void preprocessCUDA(
 				break;
 
 			// Transform point by projecting
-            float4 p_hom = transformPoint4x4(p_orig, (float*)&projmatrix);
+            float4 p_hom = transformPoint4x4(p_orig, (const float*)&projmatrix);
             float p_w = 1.0f / (p_hom.w + 0.0000001f);
 			float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
 
@@ -423,75 +423,20 @@ __global__ void preprocessCUDA(
 	}
 }
 
-/**
- * @brief Construct the world-to-camera (view) matrix.
- *
- * GLM uses column-major storage. The returned matrix transforms a point
- * from world coordinates into camera coordinates.
- *
- * @param[in] position  Camera center in world coordinates (t).
- * @param[in] rotation  World-to-camera rotation matrix (R = (C2W.R)^T).
- *                      If you have camera-to-world rotation (C2W.R),
- *                      pass its transpose.
- *
- * @return 4x4 world-to-camera (view) matrix:
- *
- *         W2C = [ R   -R * t ]
- *               [ 0      1   ]
- *
- * where t is the camera position in world coordinates.
- */
-glm::mat4 getViewMatrix(glm::vec3 position, glm::mat3 rotation)
-{
-	return glm::mat4(
-		glm::vec4(rotation[0], 0.0f),
-		glm::vec4(rotation[1], 0.0f),
-		glm::vec4(rotation[2], 0.0f),
-		glm::vec4(rotation * -position, 1.0f));
-}
-
-
-glm::mat4 getProjectionMatrix(int width, int height, glm::vec3 position, glm::mat3 rotation, float focal_x, float focal_y, float zFar, float zNear)
-{
-	float top = height / (2.0f * focal_y) * zNear;
-	float bottom = -top;
-	float right = width / (2.0f * focal_x) * zNear;
-	float left = -right;
-
-	glm::mat4 P;
-	memset(&P, 0, sizeof P);
-	float z_sign = 1.0f;
-
-	P[0][0] = 2.0f * zNear / (right - left);
-	P[1][1] = 2.0f * zNear / (top - bottom);
-	P[0][2] = (right + left) / (right - left);
-	P[1][2] = (top + bottom) / (top - bottom);
-	P[3][2] = z_sign;
-	P[2][2] = z_sign * zFar / (zFar - zNear);
-	P[2][3] = -(zFar * zNear) / (zFar - zNear);
-
-	return glm::transpose(P) * getViewMatrix(position, rotation);
-}
-
 
 } // namespace
 
 void preprocess(int P,
 	glm::vec3* positions, shs_deg3_t* shs, const float* opacities, cov3d_t* cov3Ds,
 	int width, int height, int block_x, int block_y,
-	glm::vec3 cam_position, glm::mat3 cam_rotation,
-	float focal_x, float focal_y, float zFar, float zNear,
+	const glm::vec3 cam_position, const glm::mat3 cam_rotation, const glm::mat4 view_matrix, const glm::mat4 proj_matrix,
+	float focal_x, float focal_y, float zFar, float zNear, float tan_fovx, float tan_fovy,
 	float2* points_xy, float4* rgb_depth, float4* conic_opacity,
 	uint64_t* gaussian_keys_unsorted, uint32_t* gaussian_values_unsorted,
 	int* curr_offset, cudaStream_t stream
 )
 {
 	dim3 grid((width + block_x - 1) / block_x, (height + block_y - 1) / block_y, 1);
-
-	glm::mat4 view_matrix = getViewMatrix(cam_position, cam_rotation);
-	glm::mat4 proj_matrix = getProjectionMatrix(width, height, cam_position, cam_rotation, focal_x, focal_y, zFar, zNear);
-	float tan_fovx = width / (2.0f * focal_x);
-	float tan_fovy = height / (2.0f * focal_y);
 
 #ifdef DEBUG
 	std::cout << std::endl;

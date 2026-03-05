@@ -60,24 +60,9 @@ __forceinline__ __device__ uint8_t encode(float x)
 	return (uint8_t)min(max(0.0f, x * 255.0f), 255.0f);
 }
 
-// __forceinline__ __device__ uint8_t write_color(uchar3* __restrict__ out_color,
-// 	float3 bg_color, int2 pix, int width, int height, float3 C, float T)
-// {
-// 	if (pix.x < width && pix.y < height)
-// 	{
-// 		int pix_id = width * pix.y + pix.x;
-// 		if (T < 0.0001f)
-// 		{
-// 			T = 0.0f;
-// 		}
-// 		out_color[pix_id].x = encode(C.x + T * bg_color.x);
-// 		out_color[pix_id].y = encode(C.y + T * bg_color.y);
-// 		out_color[pix_id].z = encode(C.z + T * bg_color.z);
-// 	}
-// }
 
 __forceinline__ __device__ void write_color(float4* __restrict__ out_color, float* __restrict__ inv_depth,
-	float* bg_color, int2 pix, int width, int height, float3 C, float D, float T)
+	float3 bg_color, int2 pix, int width, int height, float3 C, float D, float T)
 {
 	if (pix.x < width && pix.y < height)
 	{
@@ -86,9 +71,9 @@ __forceinline__ __device__ void write_color(float4* __restrict__ out_color, floa
 		{
 			T = 0.0f;
 		}
-		out_color[pix_id].x = C.x + T * bg_color[0];
-		out_color[pix_id].y = C.y + T * bg_color[1];
-		out_color[pix_id].z = C.z + T * bg_color[2];
+		out_color[pix_id].x = C.x + T * bg_color.x;
+		out_color[pix_id].y = C.y + T * bg_color.y;
+		out_color[pix_id].z = C.z + T * bg_color.z;
 		out_color[pix_id].w = 1.0f - T;
 		inv_depth[pix_id] = D;
 	}
@@ -229,8 +214,7 @@ __global__ void renderCUDA(
 	const float4* __restrict__ rgb_depth,
 	const float4* __restrict__ conic_opacity,
 	render_load_info info,
-	float* bg_color,
-	// uchar3* __restrict__ out_color)
+	float3 bg_color,
 	float4* __restrict__ out_color,
 	float* __restrict__ inv_depth)
 {
@@ -575,12 +559,9 @@ __global__ void renderCUDA(
 				int pix_x = blockIdx.x * BLOCK_X + threadIdx.x * THREAD_X + j;
 				int pix_y = blockIdx.y * BLOCK_Y + threadIdx.y * THREAD_Y + i;
 				int pix_id = width * pix_y + pix_x;
-				// out_color[pix_id].x = encode(bg_color.x);
-				// out_color[pix_id].y = encode(bg_color.y);
-				// out_color[pix_id].z = encode(bg_color.z);
-				out_color[pix_id].x = bg_color[0];
-				out_color[pix_id].y = bg_color[1];
-				out_color[pix_id].z = bg_color[2];
+				out_color[pix_id].x = bg_color.x;
+				out_color[pix_id].y = bg_color.y;
+				out_color[pix_id].z = bg_color.z;
 				out_color[pix_id].w = 1.0f;
 				inv_depth[pix_id] = 0;
 			}
@@ -593,17 +574,9 @@ void render(int num_rendered,
 	int width, int height,
 	float2* points_xy, float4* rgb_depth, float4* conic_opacity,
 	uint64_t* gaussian_keys_sorted, uint32_t* gaussian_values_sorted,
-	// int2* ranges, float3 bg_color, uchar3* out_color, cudaStream_t stream)
-		int2* ranges, float* bg_color, float4* out_color, float* inv_depth, cudaStream_t stream)
+	int2* ranges, float3 bg_color, float4* out_color, float* inv_depth, cudaStream_t stream)
 {
 	dim3 grid((width + BLOCK_X - 1) / BLOCK_X, (height + BLOCK_Y - 1) / BLOCK_Y, 1);
-	// cudaMemsetAsync(ranges, 0, sizeof(int2) * grid.x * grid.y, stream);
-
-    // // Identify start and end of per-tile workloads in sorted list
-    // identifyTileRanges<<<(num_rendered + 255) / 256, 256, 0, stream>>>(
-    //     num_rendered,
-    //     gaussian_keys_sorted,
-    //     ranges);
 
     // Let each tile blend its range of Gaussians independently in parallel
     renderCUDA<BLOCK_X, BLOCK_Y, BLOCK_X / 8, BLOCK_Y / 4><<<grid, dim3(8, 4, 1), 0, stream>>>(
@@ -626,8 +599,7 @@ void render_16x16(int num_rendered,
 	int width, int height,
 	float2* points_xy, float4* rgb_depth, float4* conic_opacity,
 	uint64_t* gaussian_keys_sorted, uint32_t* gaussian_values_sorted,
-	// int2* ranges, float3 bg_color, uchar3* out_color, cudaStream_t stream)
-	int2* ranges, float* bg_color, float4* out_color, float* inv_depth, cudaStream_t stream)
+	int2* ranges, float3 bg_color, float4* out_color, float* inv_depth, cudaStream_t stream)
 {
     render<16, 16>(num_rendered, width, height, points_xy, rgb_depth, conic_opacity,
 	    gaussian_keys_sorted, gaussian_values_sorted, ranges, bg_color, out_color, inv_depth, stream);
@@ -637,8 +609,7 @@ void render_32x16(int num_rendered,
 	int width, int height,
 	float2* points_xy, float4* rgb_depth, float4* conic_opacity,
 	uint64_t* gaussian_keys_sorted, uint32_t* gaussian_values_sorted,
-	// int2* ranges, float3 bg_color, uchar3* out_color, cudaStream_t stream)
-	int2* ranges, float* bg_color, float4* out_color, float* inv_depth, cudaStream_t stream)
+	int2* ranges, float3 bg_color, float4* out_color, float* inv_depth, cudaStream_t stream)
 {
     render<32, 16>(num_rendered, width, height, points_xy, rgb_depth, conic_opacity,
 	    gaussian_keys_sorted, gaussian_values_sorted, ranges, bg_color, out_color, inv_depth, stream);
@@ -648,8 +619,7 @@ void render_32x32(int num_rendered,
 	int width, int height,
 	float2* points_xy, float4* rgb_depth, float4* conic_opacity,
 	uint64_t* gaussian_keys_sorted, uint32_t* gaussian_values_sorted,
-	// int2* ranges, float3 bg_color, uchar3* out_color, cudaStream_t stream)
-	int2* ranges, float* bg_color, float4* out_color, float* inv_depth, cudaStream_t stream)
+	int2* ranges, float3 bg_color, float4* out_color, float* inv_depth, cudaStream_t stream)
 {
     render<32, 32>(num_rendered, width, height, points_xy, rgb_depth, conic_opacity,
 	    gaussian_keys_sorted, gaussian_values_sorted, ranges, bg_color, out_color, inv_depth, stream);

@@ -238,7 +238,7 @@ float GaussianRender<D>::render(GsCamera& inCamera, float*& outImage, float*& ou
 	{
 		ScopeTimer timer("set camera and image cuda");
 		setCudaImageParams(inCamera, debug);
-		setCudaCameraParams(inCamera, debug);
+		// setCudaCameraParams(inCamera, debug);
 	}
 
 
@@ -253,16 +253,17 @@ float GaussianRender<D>::render(GsCamera& inCamera, float*& outImage, float*& ou
 		Eigen::Matrix3f cpuCamRotEigen = inCamera.quaternion.toRotationMatrix();
 		std::vector<float> cpuCamPos(cpuCamPosEigen.data(), cpuCamPosEigen.data() + 3);
 		std::vector<float> cpuCamRot(cpuCamRotEigen.data(), cpuCamRotEigen.data() + 9);
+		std::vector<float> cpuBackground = {inCamera.bgColor.x(), inCamera.bgColor.y(), inCamera.bgColor.z()};
 		ScopeTimer timer("forward");
 		CHECK_CUDA(
-			numRendered = CudaRasterizer::Rasterizer::forward2(
+			numRendered = CudaRasterizer::Rasterizer::forward(
 			resizeFunctional(&cudaGeometryState, allocatedGeometryState),
 			resizeFunctional(&cudaBinningState, allocatedBinningState),
 			resizeFunctional(&cudaImageState, allocatedImageState),
 			P, D, M, config.maxNumRenderedGaussians,
 			config.bUseFlashGSExactIntersection, config.bUseFlashGSPrefetchingPipeline, config.bUseTensorCore,
 			cpuCamPos, cpuCamRot, inCamera.znear, inCamera.zfar, cudaCurrOffset,
-			cudaBackground,
+			cpuBackground,
 			inCamera.width, inCamera.height,
 			sceneData.cudaGaussianPoints,
 			sceneData.cudaGaussianSHs,
@@ -273,9 +274,6 @@ float GaussianRender<D>::render(GsCamera& inCamera, float*& outImage, float*& ou
 			sceneData.cudaGaussianRot,
 			// nullptr,
 			sceneData.cudaGaussianCov3D,
-			cudaView,
-			cudaProj,
-			cudaCamPos,
 			tanHalfFovx, tanHalfFovy,
 			false,
 			cudaImage,
@@ -284,35 +282,6 @@ float GaussianRender<D>::render(GsCamera& inCamera, float*& outImage, float*& ou
 			cudaRadii,
 			debug), debug
 		);
-		// CHECK_CUDA(
-		// 	numRendered = CudaRasterizer::Rasterizer::forward(
-		// 	resizeFunctional(&cudaGeometryState, allocatedGeometryState),
-		// 	resizeFunctional(&cudaBinningState, allocatedBinningState),
-		// 	resizeFunctional(&cudaImageState, allocatedImageState),
-		// 	P, D, M, 
-		// 	cudaBackground,
-		// 	inCamera.width, inCamera.height,
-		// 	sceneData.cudaGaussianPoints,
-		// 	sceneData.cudaGaussianSHs,
-		// 	nullptr,
-		// 	sceneData.cudaGaussianOpacity,
-		// 	sceneData.cudaGaussianScale,
-		// 	inCamera.scale,
-		// 	sceneData.cudaGaussianRot,
-		// 	nullptr,
-		// 	// sceneData.cudaGaussianCov3D,
-		// 	cudaView,
-		// 	cudaProj,
-		// 	cudaCamPos,
-		// 	tanHalfFovx, tanHalfFovy,
-		// 	false,
-		// 	cudaImage,
-		// 	cudaAllMap,
-		// 	false,
-		// 	cudaRadii,
-		// 	debug), debug
-		// );
-		// cudaStreamSynchronize(stream);
 	}
 
 	outImage = cudaImage;
@@ -332,38 +301,6 @@ void GaussianRender<D>::initCuda(int device) {
 	}
 }
 
-
-// template <int D>
-// void GaussianRender<D>::setDefaultCamera(int fov, int width, int height) {
-//     defaultCamera.coordSystem = CameraCoordSystem::COLMAP;
-//     defaultCamera.width = width;
-//     defaultCamera.height = height;
-//     defaultCamera.fx = width / 2.f / std::tan(deg2Rad(fov / 2));
-//     defaultCamera.fy = defaultCamera.fx;
-//     defaultCamera.cx = width / 2.0f;
-//     defaultCamera.cy = height / 2.0f;
-//     defaultCamera.bgColor = glm::vec3(0.0f, 0.0f, 0.0f);
-
-//     glm::vec3 sceneCenter = (sceneData.sceneMax + sceneData.sceneMin) * 0.5f;
-//     glm::vec3 sceneSize = sceneData.sceneMax - sceneData.sceneMin;
-
-//     // 相机位置与朝向
-//     glm::vec3 cameraPos(sceneCenter.x, sceneCenter.y + sceneSize.y * 0.5f, sceneCenter.z + sceneSize.z * 0.5f);
-//     glm::vec3 cameraTarget = sceneCenter;
-    
-//     glm::vec3 up(0.0f, 1.0f, 0.0f);
-//     glm::vec3 forward = glm::normalize(cameraTarget - cameraPos);
-//     glm::vec3 right = glm::normalize(glm::cross(up, forward)); // GLM cross(x, y)
-//     glm::vec3 newUp = glm::cross(forward, right);
-
-//     // 构建旋转矩阵
-//     // 注意：GLM 矩阵构造是列主序，glm::mat3(col0, col1, col2)
-//     glm::mat3 R(right, newUp, forward);
-
-//     glm::quat quat = glm::quat_cast(R); 
-//     defaultCamera.quaternion = glm::quat_cast(R);
-//     defaultCamera.position = cameraPos;
-// }
 
 template <int D>
 void GaussianRender<D>::setDefaultCamera(int fov, int width, int height) {
@@ -471,8 +408,6 @@ void SceneData<D>::initResource(std::string modelPath,  std::string cacheSavePat
 		gaussianOpacity.insert(gaussianOpacity.end(), opacityVec.begin(), opacityVec.end());
 		gaussianScale.insert(gaussianScale.end(), scaleVec.begin(), scaleVec.end());
 		gaussianRot.insert(gaussianRot.end(), rotVec.begin(), rotVec.end());
-		// gaussianCov3D.resize(numElem * 6);
-		// computeCov3Ds(scaleVec.data(), 1.0f, rotVec.data(), gaussianCov3D.data(), numElem);
 
 		numPoints += numElem;
 		GS_INFO("Loaded %d gaussians from %s elapsed %.2f ms", numPoints, path.c_str(), (float)(Utils::nowUs() - t0) / 1000);

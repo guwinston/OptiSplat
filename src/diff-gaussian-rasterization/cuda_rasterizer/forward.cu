@@ -161,18 +161,16 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	bool* clamped,
 	const float* cov3D_precomp,
 	const float* colors_precomp,
-	const float* viewmatrix,
-	const float* projmatrix,
-	const glm::vec3* cam_pos,
+	const glm::mat4 viewmatrix,
+	const glm::mat4 projmatrix,
+	const glm::vec3 cam_pos,
 	const int W, int H,
 	const float tan_fovx, float tan_fovy,
 	const float focal_x, float focal_y,
 	int* radii,
 	float2* points_xy_image,
-	// float* depths,
 	float* cov3Ds,
 	float4* rgb_depth,
-	// float* rgb,
 	float4* conic_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
@@ -190,12 +188,12 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// Perform near culling, quit if outside.
 	float3 p_view;
-	if (!in_frustum(idx, orig_points, viewmatrix, projmatrix, prefiltered, p_view))
+	if (!in_frustum(idx, orig_points, (float*)&viewmatrix, (float*)&projmatrix, prefiltered, p_view))
 		return;
 
 	// Transform point by projecting
 	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
-	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
+	float4 p_hom = transformPoint4x4(p_orig, (float*)&projmatrix);
 	float p_w = 1.0f / (p_hom.w + 0.0000001f);
 	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
 
@@ -213,7 +211,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	}
 
 	// Compute 2D screen-space covariance matrix
-	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix);
+	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, (float*)&viewmatrix);
 
 	constexpr float h_var = 0.3f;
 	const float det_cov = cov.x * cov.z - cov.y * cov.y;
@@ -251,10 +249,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// spherical harmonics coefficients to RGB color.
 	if (colors_precomp == nullptr)
 	{
-		glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
-		// rgb[idx * C + 0] = result.x;
-		// rgb[idx * C + 1] = result.y;
-		// rgb[idx * C + 2] = result.z;
+		glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, cam_pos, shs, clamped);
 		rgb_depth[idx].x = result.x;
 		rgb_depth[idx].y = result.y;
 		rgb_depth[idx].z = result.z;
@@ -262,15 +257,12 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	}
 
 	// Store some useful helper data for the next steps.
-	// depths[idx] = p_view.z;
 	radii[idx] = my_radius;
 	points_xy_image[idx] = point_image;
 	// Inverse 2D covariance and opacity neatly pack into one float4
 	float opacity = opacities[idx];
 
-
-	// conic_opacity[idx] = { conic.x, conic.y, conic.z, opacity * h_convolution_scaling };
-	float log2_opacity; // 这里为了对齐flash gs preprocess函数的输出
+	float log2_opacity; 
 	asm volatile("lg2.approx.f32 %0, %1;" : "=f"(log2_opacity) : "f"(opacity * h_convolution_scaling));
 	conic_opacity[idx] = { (-0.5f * log2e) * conic.x, -log2e * conic.y, (-0.5f * log2e) * conic.z, log2_opacity };
 
@@ -289,13 +281,11 @@ renderCUDA(
 	int W, int H,
 	const float2* __restrict__ points_xy_image,
 	const float4* __restrict__ features_depths,
-	// const float* __restrict__ features,
 	const float4* __restrict__ conic_opacity,
 	float* __restrict__ final_T,
 	uint32_t* __restrict__ n_contrib,
-	const float* __restrict__ bg_color,
+	const float3 __restrict__ bg_color,
 	float* __restrict__ out_color,
-	// const float* __restrict__ depths,
 	float* __restrict__ invdepth)
 {
 	// Identify current tile and associated min/max pixel range.
@@ -406,9 +396,9 @@ renderCUDA(
 	{
 		final_T[pix_id] = T;
 		n_contrib[pix_id] = last_contributor;
-		for (int ch = 0; ch < CHANNELS; ch++)
-			// out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch]; // CHW
-			out_color[pix_id * 4 + ch] = C[ch] + T * bg_color[ch]; // HWC
+		out_color[pix_id * 4 + 0] = C[0] + T * bg_color.x; // HWC
+		out_color[pix_id * 4 + 1] = C[1] + T * bg_color.y;
+		out_color[pix_id * 4 + 2] = C[2] + T * bg_color.z;
 		out_color[pix_id * 4 + 3] = 1.0f - T; // Store alpha in 4th channel
 
 		if (invdepth)
@@ -423,13 +413,11 @@ void FORWARD::render(
 	int W, int H,
 	const float2* means2D,
 	const float4* colors_depths,
-	// const float* colors,
 	const float4* conic_opacity,
 	float* final_T,
 	uint32_t* n_contrib,
-	const float* bg_color,
+	const float3 bg_color,
 	float* out_color,
-	// float* depths,
 	float* depth)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
@@ -438,13 +426,11 @@ void FORWARD::render(
 		W, H,
 		means2D,
 		colors_depths,
-		// colors,
 		conic_opacity,
 		final_T,
 		n_contrib,
 		bg_color,
 		out_color,
-		// depths, 
 		depth);
 }
 
@@ -458,18 +444,16 @@ void FORWARD::preprocess(int P, int D, int M,
 	bool* clamped,
 	const float* cov3D_precomp,
 	const float* colors_precomp,
-	const float* viewmatrix,
-	const float* projmatrix,
-	const glm::vec3* cam_pos,
+	const glm::mat4 viewmatrix,
+	const glm::mat4 projmatrix,
+	const glm::vec3 cam_pos,
 	const int W, int H,
 	const float focal_x, float focal_y,
 	const float tan_fovx, float tan_fovy,
 	int* radii,
 	float2* means2D,
-	// float* depths,
 	float* cov3Ds,
 	float4* rgb_depth,
-	// float* rgb,
 	float4* conic_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
@@ -495,10 +479,8 @@ void FORWARD::preprocess(int P, int D, int M,
 		focal_x, focal_y,
 		radii,
 		means2D,
-		// depths,
 		cov3Ds,
 		rgb_depth,
-		// rgb,
 		conic_opacity,
 		grid,
 		tiles_touched,

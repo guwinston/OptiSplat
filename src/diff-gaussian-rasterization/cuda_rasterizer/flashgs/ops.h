@@ -33,8 +33,8 @@ union shs_deg3_t
 void preprocess(int P,
 	glm::vec3* positions, shs_deg3_t* shs, const float* opacities, cov3d_t* cov3Ds,
 	int width, int height, int block_x, int block_y,
-	glm::vec3 cam_position, glm::mat3 cam_rotation, 
-	float focal_x, float focal_y, float zFar, float zNear,
+	const glm::vec3 cam_position, const glm::mat3 cam_rotation, const glm::mat4 view_matrix, const glm::mat4 proj_matrix,
+	float focal_x, float focal_y, float zFar, float zNear, float tan_fovx, float tan_fovy,
 	float2* points_xy, float4* rgb_depth, float4* conic_opacity,
 	uint64_t* gaussian_keys_unsorted, uint32_t* gaussian_values_unsorted,
 	int* curr_offset, cudaStream_t stream = 0
@@ -52,21 +52,18 @@ void render_16x16(int num_rendered,
 	int width, int height,
 	float2* points_xy, float4* rgb_depth, float4* conic_opacity,
 	uint64_t* gaussian_keys_sorted, uint32_t* gaussian_values_sorted,
-	// int2* ranges, float3 bg_color, uchar3* out_color, cudaStream_t stream = 0);
-	int2* ranges, float* bg_color, float4* out_color, float* inv_depth, cudaStream_t stream = 0);
+	int2* ranges, float3 bg_color, float4* out_color, float* inv_depth, cudaStream_t stream = 0);
 
 void render_32x16(int num_rendered,
 	int width, int height,
 	float2* points_xy, float4* rgb_depth, float4* conic_opacity,
 	uint64_t* gaussian_keys_sorted, uint32_t* gaussian_values_sorted,
-	// int2* ranges, float3 bg_color, uchar3* out_color, cudaStream_t stream = 0);
-	int2* ranges, float* bg_color, float4* out_color, float* inv_depth, cudaStream_t stream = 0);
+	int2* ranges, float3 bg_color, float4* out_color, float* inv_depth, cudaStream_t stream = 0);
 
 void render_32x32(int num_rendered,
 	int width, int height,
 	float2* points_xy, float4* rgb_depth, float4* conic_opacity,
 	uint64_t* gaussian_keys_sorted, uint32_t* gaussian_values_sorted,
-	// int2* ranges, float3 bg_color, uchar3* out_color, cudaStream_t stream = 0);
-	int2* ranges, float* bg_color, float4* out_color, float* inv_depth, cudaStream_t stream = 0);
+	int2* ranges, float3 bg_color, float4* out_color, float* inv_depth, cudaStream_t stream = 0);
 
 } // namespace flashgs
