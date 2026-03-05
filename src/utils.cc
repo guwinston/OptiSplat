@@ -170,14 +170,12 @@ void Utils::saveImages(const float* cudaData, int N, int H, int W, std::vector<s
 
 
 void Utils::saveAllMaps(const float* cudaData, int N, int H, int W, std::vector<std::string> filenames, bool saveRawData) {
-    const int NUM_ALLMAP_CHANNELS = 1; // 仅 Depth (1)
+    const int NUM_ALLMAP_CHANNELS = 1; // Only Depth (1)
     size_t imageSize = static_cast<size_t>(N) * NUM_ALLMAP_CHANNELS * H * W;
     std::vector<float> hostData(imageSize);
     
-    // 从 GPU 拷贝单通道深度数据
     cudaMemcpy(hostData.data(), cudaData, imageSize * sizeof(float), cudaMemcpyDeviceToHost);
 
-    // 保存原始二进制数据 (.bin)
     if (saveRawData && !filenames.empty()) {
         std::filesystem::path filePath(filenames[0]);
         std::string filename = filePath.parent_path().string() + "/" + filePath.stem().string() + ".bin";
@@ -191,8 +189,6 @@ void Utils::saveAllMaps(const float* cudaData, int N, int H, int W, std::vector<
         std::string folderPath = filePath.parent_path().string();
         std::string extension = filePath.extension().string();
         std::string name = filePath.stem().string();
-        
-        // 仅保存深度图文件名
         std::string depthFilename = folderPath + "/" + name + "_depth" + extension;
 
         if (!std::filesystem::exists(folderPath)) {
@@ -201,7 +197,6 @@ void Utils::saveAllMaps(const float* cudaData, int N, int H, int W, std::vector<
 
         const float* imageDataStart = hostData.data() + n * H * W;
 
-        // 1. 寻找当前图像深度的最大最小值用于归一化
         float depthMin = std::numeric_limits<float>::max();
         float depthMax = std::numeric_limits<float>::lowest();
         for (int i = 0; i < H * W; ++i) {
@@ -212,19 +207,15 @@ void Utils::saveAllMaps(const float* cudaData, int N, int H, int W, std::vector<
             }
         }
 
-        // 防止除以零（全平面的情况）
         if (depthMax <= depthMin) depthMax = depthMin + 1.0f;
 
-        // 2. 转换为 unsigned char (单通道)
         std::vector<unsigned char> depthUC(H * W);
         for (int i = 0; i < H * W; ++i) {
             float val = imageDataStart[i];
-            // 线性归一化到 0-255
             float normalized = (val - depthMin) / (depthMax - depthMin);
             depthUC[i] = static_cast<unsigned char>(std::min(255.0f, std::max(0.0f, normalized * 255.0f)));
         }
 
-        // 3. 保存深度图
         if (extension == ".png") {
             if (!stbi_write_png(depthFilename.c_str(), W, H, 1, depthUC.data(), W)) {
                 GS_ERROR("Failed to write PNG depth image to %s", depthFilename.c_str());

@@ -29,7 +29,9 @@ int main(int argc, char** argv) {
     std::vector<GsCamera> cameras = Utils::readCamerasFromJson(config.cameraPath);
     std::shared_ptr<IGaussianRender> renderer = IGaussianRender::CreateRenderer(config);
     if (bRunViewer) {
-        return runViewer(renderer, cameras, -1, debug);
+        int maxWindowWidth = 1920;
+        int maxWindowHeight = 1080;
+        return runViewer(renderer, cameras, maxWindowWidth, maxWindowHeight, -1, debug);
     }
 
     ProgressBar progress(cameras.size(), "Rendering");
@@ -39,7 +41,7 @@ int main(int argc, char** argv) {
     GsCamera camera = cameras[0];
     if (testPerformance)
         for (int i = 0; i < 10; i++)
-            renderer->render(camera, outImage, outAllmap, debug);
+            renderer->render(camera, outImage, outAllmap, debug); // warm-up
     for (int i = 0; i < cameras.size(); i++) {
         auto t0 = Utils::nowUs();
         camera = cameras[i];

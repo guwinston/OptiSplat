@@ -4,8 +4,6 @@
 #include "camera.h"
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
-// #include <glm/glm.hpp>
-// #include <glm/gtc/quaternion.hpp>
 
 #include <numeric>
 #include <filesystem>
@@ -40,85 +38,6 @@ std::function<char* (size_t N)> resizeFunctional(void** ptr, size_t& S, bool deb
 	return lambda;
 }
 
-// void computeCov3D(const glm::vec3 scale, float mod, const glm::vec4 rot, float* cov3D)
-// {
-//     // Create scaling matrix
-//     glm::mat3 S = glm::mat3(1.0f);
-//     S[0][0] = mod * scale.x;
-//     S[1][1] = mod * scale.y;
-//     S[2][2] = mod * scale.z;
-
-//     // Normalize quaternion to get valid rotation
-//     glm::vec4 q = rot;// / glm::length(rot);
-//     float r = q.x;
-//     float x = q.y;
-//     float y = q.z;
-//     float z = q.w;
-
-//     // Compute rotation matrix from quaternion
-//     glm::mat3 R = glm::mat3(
-//         1.f - 2.f * (y * y + z * z), 2.f * (x * y - r * z), 2.f * (x * z + r * y),
-//         2.f * (x * y + r * z), 1.f - 2.f * (x * x + z * z), 2.f * (y * z - r * x),
-//         2.f * (x * z - r * y), 2.f * (y * z + r * x), 1.f - 2.f * (x * x + y * y)
-//     );
-
-//     glm::mat3 M = S * R;
-
-//     // Compute 3D world covariance matrix Sigma
-//     glm::mat3 Sigma = glm::transpose(M) * M;
-
-//     // Covariance is symmetric, only store upper right
-//     cov3D[0] = Sigma[0][0];
-//     cov3D[1] = Sigma[0][1];
-//     cov3D[2] = Sigma[0][2];
-//     cov3D[3] = Sigma[1][1];
-//     cov3D[4] = Sigma[1][2];
-//     cov3D[5] = Sigma[2][2];
-// }
-
-// void computeCov3Ds(const glm::vec3* scales, float mod, const glm::vec4* rots, float* cov3Ds, int num) {
-// 	for (int i = 0; i < num; i++) {
-// 		computeCov3D(scales[i], mod, rots[i], cov3Ds + i * 6);
-// 	}
-// }
-
-// void computeCov3D(const Eigen::Vector3f& scale, float mod, const Eigen::Vector4f& rot, float* cov3D)
-// {
-//     // 1. 创建缩放矩阵 (利用 diagonal 特性更高效)
-//     // S = diag(mod * sx, mod * sy, mod * sz)
-//     Eigen::Matrix3f S = Eigen::Matrix3f::Zero();
-//     S.diagonal() = scale * mod;
-
-//     // 2. 从四元数构造旋转矩阵
-//     // 注意：输入 rot 是 (w, x, y, z) 还是 (x, y, z, w)? 
-//     // 根据你原代码 float r = q.x (即 w), x = q.y, y = q.z, z = q.w
-//     // 我们直接构造 Eigen 四元数。Eigen 构造函数顺序是 (w, x, y, z)
-//     Eigen::Quaternionf q(rot[0], rot[1], rot[2], rot[3]);
-    
-//     // 必须归一化以防止 NaN 和精度漂移，这是解决你之前问题的关键
-//     q.normalize(); 
-//     Eigen::Matrix3f R = q.toRotationMatrix();
-
-//     // 3. 计算中间矩阵 M
-//     // 原代码逻辑: M = S * R
-//     Eigen::Matrix3f M = S * R;
-
-//     // 4. 计算 3D 协方差矩阵 Sigma = M^T * M
-//     // Eigen 的 transpose() * M 在内部有高度优化
-//     Eigen::Matrix3f Sigma = M.transpose() * M;
-
-//     // 5. 存储上三角元素 (Symmetric Matrix)
-//     // 索引说明: Sigma(row, col)
-//     cov3D[0] = Sigma(0, 0);
-//     cov3D[1] = Sigma(0, 1);
-//     cov3D[2] = Sigma(0, 2);
-//     cov3D[3] = Sigma(1, 1);
-//     cov3D[4] = Sigma(1, 2);
-//     cov3D[5] = Sigma(2, 2);
-// }
-
-
-// 单个物体 3D 协方差
 void computeCov3D(const Eigen::Vector3f& scale, float mod, const Eigen::Vector4f& rot, float* cov3D)
 {
     // Create scaling matrix
@@ -128,18 +47,18 @@ void computeCov3D(const Eigen::Vector3f& scale, float mod, const Eigen::Vector4f
     S(2,2) = mod * scale.z();
 
     // Normalize quaternion to get valid rotation
-    Eigen::Vector4f q = rot; // / rot.norm();  // 如果需要归一化可以取消注释
-    float r = q.x();  // 对应原 glm: r = q.x
-    float x = q.y();  // 对应原 glm: x = q.y
-    float y = q.z();  // 对应原 glm: y = q.z
-    float z = q.w();  // 对应原 glm: z = q.w
+    Eigen::Vector4f q = rot; //
+    float r = q.x();
+    float x = q.y();
+    float y = q.z();
+    float z = q.w();
 
     // Compute rotation matrix from quaternion
     Eigen::Matrix3f R;
     R << 1.f - 2.f * (y*y + z*z), 2.f * (x*y - r*z), 2.f * (x*z + r*y),
          2.f * (x*y + r*z), 1.f - 2.f * (x*x + z*z), 2.f * (y*z - r*x),
          2.f * (x*z - r*y), 2.f * (y*z + r*x), 1.f - 2.f * (x*x + y*y);
-	R.transposeInPlace(); // 转置以匹配原 glm 代码的行主序访问
+	R.transposeInPlace();
 
     Eigen::Matrix3f M = S * R;
 
@@ -170,6 +89,7 @@ std::shared_ptr<IGaussianRender> IGaussianRender::CreateRenderer(GsConfig config
 		GS_ERROR("Invalid PLY file: %s", config.modelPath.c_str());
 		return nullptr;
 	}
+	GS_INFO("Model sh degree = %d", shsDegree);
 
 	std::shared_ptr<IGaussianRender> renderer = nullptr;
 	switch (shsDegree)
@@ -544,15 +464,7 @@ int SceneData<D>::loadPlyFlexible(
             }
 		}
 		// must normalize quat of rot, otherwise the cov3d will be wrong!
-		// float length2 = 0;
-		// for (int j = 0; j < 4; j++) length2 += rotVec[i][j] * rotVec[i][j];
-		// float length = sqrt(length2);
-		// for (int j = 0; j < 4; j++) rotVec[i][j] = rotVec[i][j] / length;
-		// rotVec[i] = glm::normalize(rotVec[i]);
 		rotVec[i] = rotVec[i].normalized();
-		// glm::vec4 tmp(rotVec[i].x(), rotVec[i].y(), rotVec[i].z(), rotVec[i].w());
-		// tmp = glm::normalize(tmp);
-		// rotVec[i] = Eigen::Vector4f(tmp.x, tmp.y, tmp.z, tmp.w);
 
 		Eigen::Vector3f curPos = posVec[i]; 
 		sumPos += curPos.cast<double>();

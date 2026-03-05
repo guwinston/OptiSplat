@@ -2,6 +2,7 @@
 #include <iostream>
 #include <vector>
 #include <chrono>
+#include <algorithm>
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -47,10 +48,12 @@ void updateCameraPose(GsCamera& cam, GLFWwindow* window, float deltaTime,
 
     // 1. 键盘 WASD 平移逻辑
     float velocity = moveSpeed * deltaTime;
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) cam.position -= forward * velocity;
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) cam.position += forward * velocity;
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) cam.position += forward * velocity;
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) cam.position -= forward * velocity;
     if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) cam.position -= right * velocity;
     if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) cam.position += right * velocity;
+    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) cam.position += up * velocity;
+    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) cam.position -= up * velocity;
 
     // 2. 鼠标滚轮物理推进逻辑
     if (std::abs(scrollDelta) > 0.01f) {
@@ -67,8 +70,8 @@ void updateCameraPose(GsCamera& cam, GLFWwindow* window, float deltaTime,
     if (!ImGui::GetIO().WantCaptureMouse) {
         // 左键修改旋转 (Yaw & Pitch)
         if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
-            // 绕世界坐标系 Y 轴进行水平旋转 (Yaw)
-            Eigen::AngleAxisf yaw(-deltaX * mouseSensitivity, Eigen::Vector3f(0.f, 1.f, 0.f));
+            // 绕相机局部坐标系 up 轴进行水平旋转 (Yaw)
+            Eigen::AngleAxisf yaw(deltaX * mouseSensitivity, up);
             // 绕相机局部坐标系 Right 轴进行垂直旋转 (Pitch)
             Eigen::AngleAxisf pitch(-deltaY * mouseSensitivity, right);
             
@@ -77,14 +80,15 @@ void updateCameraPose(GsCamera& cam, GLFWwindow* window, float deltaTime,
         
         // 右键进行平移 (Pan)
         if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
-            cam.position += right * (deltaX * mouseSensitivity * 2.0f);
+            cam.position -= right * (deltaX * mouseSensitivity * 2.0f);
             cam.position -= up * (deltaY * mouseSensitivity * 2.0f);
         }
     }
 }
 
-int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> cameras, int lockFPS, bool debug) {
+int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> cameras, int maxWidth, int maxHeight, int lockFPS, bool debug) {
     // --- 1. 初始化工作相机列表 (深拷贝以保护原始数据) ---
+    GS_INFO("Launching Gaussian Splatting Viewer...");
     std::vector<GsCamera> workCameras;
     if (cameras.empty()) {
         workCameras.push_back(renderer->defaultCamera);
@@ -98,8 +102,11 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    int width = workCameras[0].width;
-    int height = workCameras[0].height;
+    int width = maxWidth <= 0 ? workCameras[0].width : std::min(workCameras[0].width, maxWidth);
+    int height = maxHeight <= 0 ? workCameras[0].height : std::min(workCameras[0].height, maxHeight);
+    GS_INFO("Gaussian Splatting Viewer window resolotion: {%d}x{%d}", width, height);
+    // int width = workCameras[0].width;
+    // int height = workCameras[0].height;
     GLFWwindow* window = glfwCreateWindow(width, height, "Gaussian Splatting Viewer", NULL, NULL);
     if (!window) return -1;
     
@@ -142,19 +149,21 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
     float avgTotalMs = 0.0f;  // 完整帧耗时（平滑值）
     float numRendered = 0.0f; // 渲染的高斯点数量
     bool camSwitchLocked = false;
+    GS_INFO("Launching Gaussian Splatting Viewer successful.");
 
     // --- 6. 主循环 ---
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
         // 快捷键退出逻辑
-        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
+        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
             glfwSetWindowShouldClose(window, true);
         }
 
         // 重置视角逻辑 (R)
         if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS) {
             workCameras[currentCamIdx] = cameras.empty() ? renderer->defaultCamera : cameras[currentCamIdx];
+            workCameras[currentCamIdx].setResolution(width, height);
         }
 
         // 计算 DeltaTime (秒)
@@ -184,6 +193,7 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
         // --- A. 纯渲染过程 (测量开始) ---
         auto renderStart = std::chrono::high_resolution_clock::now();
         float* dOutAllMap = nullptr; 
+        workCameras[currentCamIdx].setResolution(width, height);
         numRendered = renderer->render(workCameras[currentCamIdx], dOutImage, dOutAllMap, debug);
         auto renderEnd = std::chrono::high_resolution_clock::now();
         
@@ -233,6 +243,7 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(window);
     }
+    GS_INFO("Shutting down...");
 
     // --- 7. 资源清理与释放 ---
     cudaFreeHost(hPinnedPtr);
@@ -243,6 +254,7 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
     ImGui::DestroyContext();
     glfwDestroyWindow(window);
     glfwTerminate();
+    GS_INFO("Shutdown complete.");
 
     return 0;
 }

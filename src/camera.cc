@@ -80,22 +80,14 @@ Eigen::Matrix4f GsCamera::getProjectionMatrix() const {
 
 
 Eigen::Matrix4f GsCamera::getWorld2CameraMatrix() const {
-    // 1. 归一化并构造旋转矩阵
     Eigen::Quaternionf q = quaternion.normalized();
     Eigen::Matrix3f R = q.toRotationMatrix();
-    
-    // 2. 计算世界到相机的变换
-    // W2C 的旋转部分是 C2W 的转置 (Rt)，位移部分是 -Rt * position
+
     Eigen::Matrix3f Rt = R.transpose();
     Eigen::Vector3f t_inv = -Rt * position;
 
-    // 3. 组合成 4x4 矩阵
     Eigen::Matrix4f m = Eigen::Matrix4f::Identity();
-    
-    // 填充左上角 3x3 旋转矩阵部分
     m.block<3, 3>(0, 0) = Rt;
-    
-    // 填充右上角 3x1 平移向量部分
     m.block<3, 1>(0, 3) = t_inv;
     
     return m;

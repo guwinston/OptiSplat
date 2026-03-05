@@ -30,8 +30,8 @@ union shs_deg3_t
     glm::vec3 v3[16];
 };
 
-void preprocess(int P,
-	glm::vec3* positions, shs_deg3_t* shs, const float* opacities, cov3d_t* cov3Ds,
+void preprocess(int P, int D, int M,
+	glm::vec3* positions, glm::vec3* shs, const float* opacities, cov3d_t* cov3Ds,
 	int width, int height, int block_x, int block_y,
 	const glm::vec3 cam_position, const glm::mat3 cam_rotation, const glm::mat4 view_matrix, const glm::mat4 proj_matrix,
 	float focal_x, float focal_y, float zFar, float zNear, float tan_fovx, float tan_fovy,

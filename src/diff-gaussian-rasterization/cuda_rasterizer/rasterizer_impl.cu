@@ -369,8 +369,8 @@ int CudaRasterizer::Rasterizer::forward(
 	if (useExactIntersection && maxNumRendered > 0) {
 		cudaMemset(currOffset, 0, sizeof(int)); // 只有设为 0 是安全的，因为cudaMemset是按照一个字节一个字节设置，而int4个字节
 		CHECK_CUDA(flashgs::preprocess(
-			P,
-			(glm::vec3*)means3D, (flashgs::shs_deg3_t*)shs, opacities, (flashgs::cov3d_t*)cov3D_precomp,
+			P, D, M,
+			(glm::vec3*)means3D, (glm::vec3*)shs, opacities, (flashgs::cov3d_t*)cov3D_precomp,
 			width, height, BLOCK_X, BLOCK_Y,
 			cpuCamPosGlm, cpuCamRotGlm, viewmatrixGlm, projmatrixGlm,
 			focal_x, focal_y, zfar, znear, tan_fovx, tan_fovy,

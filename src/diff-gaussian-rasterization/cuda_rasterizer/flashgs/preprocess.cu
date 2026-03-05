@@ -147,7 +147,7 @@ __forceinline__ __device__ float3 computeCov2D(const glm::vec3& position, float 
 	return { float(cov[0][0]), float(cov[0][1]), float(cov[1][1]) };
 }
 
-__forceinline__ __device__ glm::vec3 computeColorFromSH(int idx, glm::vec3 p_orig, glm::vec3 campos, const shs_deg3_t* shs)
+__forceinline__ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, glm::vec3 p_orig, glm::vec3 campos, const glm::vec3* shs)
 {
 	// The implementation is loosely based on code for
 	// "Differentiable Point-Based Radiance Fields for
@@ -157,31 +157,38 @@ __forceinline__ __device__ glm::vec3 computeColorFromSH(int idx, glm::vec3 p_ori
 	float rsqrt_l2 = fast_rsqrt_f32(l2);
 	dir *= rsqrt_l2;
 
-	const auto& sh = ((const shs_deg3_t*)shs)[idx];
-	glm::vec3 result = SH_C0 * sh.v3[0] += 0.5f;
+	// const auto& sh = ((const shs_deg3_t*)shs)[idx];
+	const glm::vec3* sh = shs + idx * max_coeffs;
+	glm::vec3 result = SH_C0 * sh[0] += 0.5f;
 
-	float x = dir.x;
-	float y = dir.y;
-	float z = dir.z;
-	result = result - SH_C1 * y * sh.v3[1] + SH_C1 * z * sh.v3[2] - SH_C1 * x * sh.v3[3];
+	if (deg > 0) {
+		float x = dir.x;
+		float y = dir.y;
+		float z = dir.z;
+		result = result - SH_C1 * y * sh[1] + SH_C1 * z * sh[2] - SH_C1 * x * sh[3];
 
-	float xx = x * x, yy = y * y, zz = z * z;
-	float xy = x * y, yz = y * z, xz = x * z;
-	result = result +
-		SH_C2[0] * xy * sh.v3[4] +
-		SH_C2[1] * yz * sh.v3[5] +
-		SH_C2[2] * (2.0f * zz - xx - yy) * sh.v3[6] +
-		SH_C2[3] * xz * sh.v3[7] +
-		SH_C2[4] * (xx - yy) * sh.v3[8];
+		if (deg > 1) {
+			float xx = x * x, yy = y * y, zz = z * z;
+			float xy = x * y, yz = y * z, xz = x * z;
+			result = result +
+				SH_C2[0] * xy * sh[4] +
+				SH_C2[1] * yz * sh[5] +
+				SH_C2[2] * (2.0f * zz - xx - yy) * sh[6] +
+				SH_C2[3] * xz * sh[7] +
+				SH_C2[4] * (xx - yy) * sh[8];
 
-	result = result +
-		SH_C3[0] * y * (3.0f * xx - yy) * sh.v3[9] +
-		SH_C3[1] * xy * z * sh.v3[10] +
-		SH_C3[2] * y * (4.0f * zz - xx - yy) * sh.v3[11] +
-		SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * sh.v3[12] +
-		SH_C3[4] * x * (4.0f * zz - xx - yy) * sh.v3[13] +
-		SH_C3[5] * z * (xx - yy) * sh.v3[14] +
-		SH_C3[6] * x * (xx - 3.0f * yy) * sh.v3[15];
+			if (deg > 2) {
+				result = result +
+					SH_C3[0] * y * (3.0f * xx - yy) * sh[9] +
+					SH_C3[1] * xy * z * sh[10] +
+					SH_C3[2] * y * (4.0f * zz - xx - yy) * sh[11] +
+					SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * sh[12] +
+					SH_C3[4] * x * (4.0f * zz - xx - yy) * sh[13] +
+					SH_C3[5] * z * (xx - yy) * sh[14] +
+					SH_C3[6] * x * (xx - 3.0f * yy) * sh[15];
+			}
+		}
+	}
 
 	result.x = fast_max_f32(result.x, 0.0f);
 	result.y = fast_max_f32(result.y, 0.0f);
@@ -246,10 +253,10 @@ __forceinline__ __device__ bool block_contains_center(int2 pix_min, int2 pix_max
 }
 
 __global__ void preprocessCUDA(
-	int P,
+	int P, int D, int M,
 	const glm::vec3* __restrict__ positions,
 	const float* __restrict__ opacities,
-	const shs_deg3_t* __restrict__ shs,
+	const glm::vec3* __restrict__ shs,
 	const glm::mat4 viewmatrix,
 	const glm::mat4 projmatrix,
 	const glm::vec3 cam_position,
@@ -418,7 +425,7 @@ __global__ void preprocessCUDA(
 	{
 		points_xy[idx_vec] = point_xy;
 		conic_opacity[idx_vec] = { (-0.5f * log2e) * conic.x, -log2e * conic.y, (-0.5f * log2e) * conic.z, log2_opacity };
-		auto color = computeColorFromSH(idx_vec, p_orig, cam_position, (const shs_deg3_t*)shs);
+		auto color = computeColorFromSH(idx_vec, D, M, p_orig, cam_position, shs);
 		rgb_depth[idx_vec] = {color.r, color.g, color.b, p_view.z};
 	}
 }
@@ -426,8 +433,8 @@ __global__ void preprocessCUDA(
 
 } // namespace
 
-void preprocess(int P,
-	glm::vec3* positions, shs_deg3_t* shs, const float* opacities, cov3d_t* cov3Ds,
+void preprocess(int P, int D, int M,
+	glm::vec3* positions, glm::vec3* shs, const float* opacities, cov3d_t* cov3Ds,
 	int width, int height, int block_x, int block_y,
 	const glm::vec3 cam_position, const glm::mat3 cam_rotation, const glm::mat4 view_matrix, const glm::mat4 proj_matrix,
 	float focal_x, float focal_y, float zFar, float zNear, float tan_fovx, float tan_fovy,
@@ -460,7 +467,7 @@ void preprocess(int P,
 #endif
 
 	preprocessCUDA<<<(P + 127) / 128, dim3(8, 4, 4), 0, stream>>>(
-		P,
+		P, D, M,
 		positions,
 		opacities,
 		shs,
