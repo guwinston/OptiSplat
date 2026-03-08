@@ -17,8 +17,9 @@ enum class CameraCoordSystem {
 };
 
 enum class CameraModel {
-    PINHOLE, FISHEYE, ORTHOGRAPHIC
+    PINHOLE = 0, FISHEYE = 1, ORTHOGRAPHIC = 2
 };
+inline const char* CameraModelNames[] = { "Pinhole", "Fisheye", "Orthographic" };
 
 inline CameraModel stringToCameraModel(const std::string& str) {
     if (str == "PINHOLE") return CameraModel::PINHOLE;

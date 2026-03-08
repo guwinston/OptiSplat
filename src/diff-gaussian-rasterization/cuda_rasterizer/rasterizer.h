@@ -35,6 +35,7 @@ namespace CudaRasterizer
 			const int P, int D, int M, int maxNumRendered,
 			bool useExactIntersection, bool usePrefetchingPipeline, bool useTensorCore,
 			const std::vector<float>& cpuCamPos, const std::vector<float>& cpuCamRot, float znear, float zfar, int* currOffset,
+			bool isOrtho, bool isFisheye, float k1, float k2, float k3, float k4, 
 			const std::vector<float>& cpuBackground,
 			const int width, int height,
 			const float* means3D,

@@ -168,6 +168,9 @@ float GaussianRender<D>::render(GsCamera& inCamera, float*& outImage, float*& ou
 		int M = (D + 1) * (D + 1);
 		float tanHalfFovx = inCamera.width / (2.0f * inCamera.fx);
 		float tanHalfFovy = inCamera.height / (2.0f * inCamera.fy);
+		bool isOrtho = inCamera.model == CameraModel::ORTHOGRAPHIC;
+		bool isFisheye = inCamera.model == CameraModel::FISHEYE;
+		float k1 = inCamera.k1, k2 = inCamera.k2, k3 = inCamera.k3, k4 = inCamera.k4;
 
 		Eigen::Vector3f cpuCamPosEigen = inCamera.position;
 		Eigen::Matrix3f cpuCamRotEigen = inCamera.quaternion.toRotationMatrix();
@@ -183,6 +186,7 @@ float GaussianRender<D>::render(GsCamera& inCamera, float*& outImage, float*& ou
 			P, D, M, config.maxNumRenderedGaussians,
 			config.bUseFlashGSExactIntersection, config.bUseFlashGSPrefetchingPipeline, config.bUseTensorCore,
 			cpuCamPos, cpuCamRot, inCamera.znear, inCamera.zfar, cudaCurrOffset,
+			isOrtho, isFisheye, k1, k2, k3, k4,
 			cpuBackground,
 			inCamera.width, inCamera.height,
 			sceneData.cudaGaussianPoints,

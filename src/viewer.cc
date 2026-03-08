@@ -40,6 +40,8 @@ void updateCameraPose(GsCamera& cam, GLFWwindow* window, float deltaTime,
                       float moveSpeed, float mouseSensitivity, 
                       double& lastX, double& lastY, float scrollDelta) {
     
+    bool isCameraMoved = false;
+
     // 从四元数推导当前局部坐标系的基向量
     Eigen::Matrix3f rotMat = cam.quaternion.toRotationMatrix();
     Eigen::Vector3f right   = rotMat.col(0); // 第一列：右向量
@@ -48,16 +50,17 @@ void updateCameraPose(GsCamera& cam, GLFWwindow* window, float deltaTime,
 
     // 1. 键盘 WASD 平移逻辑
     float velocity = moveSpeed * deltaTime;
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) cam.position += forward * velocity;
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) cam.position -= forward * velocity;
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) cam.position -= right * velocity;
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) cam.position += right * velocity;
-    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) cam.position += up * velocity;
-    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) cam.position -= up * velocity;
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {cam.position += forward * velocity; isCameraMoved = true;}
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {cam.position -= forward * velocity; isCameraMoved = true;}
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {cam.position -= right * velocity; isCameraMoved = true;}
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {cam.position += right * velocity; isCameraMoved = true;}
+    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {cam.position += up * velocity; isCameraMoved = true;}
+    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) {cam.position -= up * velocity; isCameraMoved = true;}
 
     // 2. 鼠标滚轮物理推进逻辑
     if (std::abs(scrollDelta) > 0.01f) {
         cam.position -= forward * (scrollDelta * moveSpeed * 0.5f);
+        isCameraMoved = true;
     }
 
     // 3. 鼠标交互（旋转与平移）
@@ -76,13 +79,21 @@ void updateCameraPose(GsCamera& cam, GLFWwindow* window, float deltaTime,
             Eigen::AngleAxisf pitch(-deltaY * mouseSensitivity, right);
             
             cam.quaternion = (Eigen::Quaternionf(yaw) * Eigen::Quaternionf(pitch) * cam.quaternion).normalized();
+            isCameraMoved = true;
         }
         
         // 右键进行平移 (Pan)
         if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
             cam.position -= right * (deltaX * mouseSensitivity * 2.0f);
             cam.position -= up * (deltaY * mouseSensitivity * 2.0f);
+            isCameraMoved = true;
         }
+    }
+
+    if (isCameraMoved) {
+        GS_INFO("Camera position = {%f, %f, %f}, quaternion = {%f, %f, %f, %f}, width = %d, height = %d, fov = %f",
+            cam.position.x(), cam.position.y(), cam.position.z(), cam.quaternion.w(), 
+            cam.quaternion.x(), cam.quaternion.y(), cam.quaternion.z(), cam.width, cam.height, rad2Deg(focal2fov(cam.fx, cam.width)));
     }
 }
 
@@ -210,7 +221,8 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
         
-        ImGui::Begin("Renderer Statistics");
+        ImGui::SetNextWindowPos(ImVec2(width - 260.0f, 10.0f), ImGuiCond_FirstUseEver);
+        ImGui::Begin("Renderer Statistics", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
         ImGui::Text("Rendered Gaussians: %.0f", numRendered);
         ImGui::Separator();
         
@@ -221,6 +233,69 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
         float currentTotalMs = deltaTime * 1000.0f;
         avgTotalMs = 0.95f * avgTotalMs + 0.05f * currentTotalMs;
         ImGui::Text("Total Frame: %.2f ms (%.1f FPS)", avgTotalMs, 1000.0f / (avgTotalMs + 1e-6f));
+        ImGui::End();
+
+        ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_FirstUseEver);
+        ImGui::Begin("Camera Settings", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+        ImGui::Text("Camera Settings");
+        int currentMode = (int)workCameras[currentCamIdx].model; 
+        if (ImGui::Combo("Projection", &currentMode, CameraModelNames, IM_ARRAYSIZE(CameraModelNames))) {
+            workCameras[currentCamIdx].model = (CameraModel)currentMode;
+        }
+        // 畸变系数 k1-k4 进度条 (仅在鱼眼模式下显示)
+        if (currentMode == (int)CameraModel::FISHEYE) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f)); // 鱼眼模式高亮提示
+            ImGui::Text("Kannala-Brandt Distortion (k1-k4)");
+            ImGui::PopStyleColor();
+
+            // 使用 DragFloat 方便微调且不占空间
+            ImGui::DragFloat("k1", &workCameras[currentCamIdx].k1, 0.001f, -1.0f, 1.0f, "%.4f");
+            ImGui::DragFloat("k2", &workCameras[currentCamIdx].k2, 0.001f, -1.0f, 1.0f, "%.4f");
+            ImGui::DragFloat("k3", &workCameras[currentCamIdx].k3, 0.001f, -1.0f, 1.0f, "%.4f");
+            ImGui::DragFloat("k4", &workCameras[currentCamIdx].k4, 0.001f, -1.0f, 1.0f, "%.4f");
+            if (ImGui::Button("Reset Distortion")) {
+                workCameras[currentCamIdx].k1 = cameras[currentCamIdx].k1;
+                workCameras[currentCamIdx].k1 = cameras[currentCamIdx].k2;
+                workCameras[currentCamIdx].k1 = cameras[currentCamIdx].k3;
+                workCameras[currentCamIdx].k1 = cameras[currentCamIdx].k4;
+            }
+        }
+        // 正交缩放 (仅在正交模式下显示)
+        else if (currentMode == (int)CameraModel::ORTHOGRAPHIC) {
+            float focalScale = workCameras[currentCamIdx].fy / workCameras[currentCamIdx].fx;
+            if (ImGui::SliderFloat("Ortho Scale", &workCameras[currentCamIdx].fx, 0.1f, 2000.0f)) {
+                workCameras[currentCamIdx].fy = workCameras[currentCamIdx].fx * focalScale;
+            }
+            if (ImGui::Button("Reset Ortho Scale")) {
+                workCameras[currentCamIdx].width = cameras[currentCamIdx].width;
+                workCameras[currentCamIdx].height = cameras[currentCamIdx].height;
+                workCameras[currentCamIdx].fx = cameras[currentCamIdx].fx;
+                workCameras[currentCamIdx].fy = cameras[currentCamIdx].fy;
+                workCameras[currentCamIdx].setResolution(width, height);
+            }
+        }
+
+        ImGui::Separator();
+        ImGui::Text("View Frustum Control");
+        if (currentMode != (int)CameraModel::ORTHOGRAPHIC) { // 正交模式下，FOV 没有意义
+            float fovDegreesX = rad2Deg(focal2fov(workCameras[currentCamIdx].fx, workCameras[currentCamIdx].width));
+            float fovDegreesY = rad2Deg(focal2fov(workCameras[currentCamIdx].fy, workCameras[currentCamIdx].height));
+            float focalScale = workCameras[currentCamIdx].fy / workCameras[currentCamIdx].fx; // 记录当前的 fx/fy 比例（通常为 1.0，但为了兼容非正方形像素，我们动态计算）
+            if (ImGui::SliderFloat("Field of View", &fovDegreesX, 1.0f, 179.0f, "%.2f deg")) {
+                workCameras[currentCamIdx].fx = fov2focal(deg2Rad(fovDegreesX), workCameras[currentCamIdx].width);
+                workCameras[currentCamIdx].fy = workCameras[currentCamIdx].fx * focalScale;
+            }
+            float fovx = rad2Deg(focal2fov(workCameras[currentCamIdx].fx, workCameras[currentCamIdx].width));
+            float fovy = rad2Deg(focal2fov(workCameras[currentCamIdx].fy, workCameras[currentCamIdx].height));
+            ImGui::Text("FovX = %.2f, FovY = %.2f", fovx, fovy);
+            if (ImGui::Button("Reset FOV")) {
+                workCameras[currentCamIdx].width = cameras[currentCamIdx].width;
+                workCameras[currentCamIdx].height = cameras[currentCamIdx].height;
+                workCameras[currentCamIdx].fx = cameras[currentCamIdx].fx;
+                workCameras[currentCamIdx].fy = cameras[currentCamIdx].fy;
+                workCameras[currentCamIdx].setResolution(width, height);
+            }
+        }
         
         ImGui::Separator();
         ImGui::Text("Camera: %d / %zu", currentCamIdx, workCameras.size());

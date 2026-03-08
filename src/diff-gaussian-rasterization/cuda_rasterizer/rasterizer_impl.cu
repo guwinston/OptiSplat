@@ -84,24 +84,43 @@ glm::mat4 getViewMatrix(const glm::vec3& position, const glm::mat3& rotation)
 }
 
 
-glm::mat4 getProjectionMatrix(int width, int height, const glm::vec3& position, const glm::mat3& rotation, float focal_x, float focal_y, float zFar, float zNear)
+glm::mat4 getProjectionMatrix(int width, int height, const glm::vec3& position, const glm::mat3& rotation, float focal_x, float focal_y, float zFar, float zNear, bool isOrtho=false)
 {
-	float top = height / (2.0f * focal_y) * zNear;
-	float bottom = -top;
-	float right = width / (2.0f * focal_x) * zNear;
-	float left = -right;
-
+	
 	glm::mat4 P;
 	memset(&P, 0, sizeof P);
-	float z_sign = 1.0f;
+	if (isOrtho) {
+		// orthographic
+        // 在正交模式下，focal_x 的含义是“物理世界 1 个单位长度对应屏幕上的多少个像素”
+        float right = width / (2.0f * focal_x);
+        float left = -right;
+        float top = height / (2.0f * focal_y);
+        float bottom = -top;
 
-	P[0][0] = 2.0f * zNear / (right - left);
-	P[1][1] = 2.0f * zNear / (top - bottom);
-	P[0][2] = (right + left) / (right - left);
-	P[1][2] = (top + bottom) / (top - bottom);
-	P[3][2] = z_sign;
-	P[2][2] = z_sign * zFar / (zFar - zNear);
-	P[2][3] = -(zFar * zNear) / (zFar - zNear);
+        P[0][0] = 2.0f / (right - left);
+        P[1][1] = 2.0f / (top - bottom);
+        P[2][2] = 1.0f / (zFar - zNear);
+        P[0][3] = -(right + left) / (right - left);
+        P[1][3] = -(top + bottom) / (top - bottom);
+        P[2][3] = -zNear / (zFar - zNear);
+        P[3][3] = 1.0f;
+	}
+	else {
+		// perspective
+		float z_sign = 1.0f;
+		float top = height / (2.0f * focal_y) * zNear;
+		float bottom = -top;
+		float right = width / (2.0f * focal_x) * zNear;
+		float left = -right;
+
+		P[0][0] = 2.0f * zNear / (right - left);
+		P[1][1] = 2.0f * zNear / (top - bottom);
+		P[0][2] = (right + left) / (right - left);
+		P[1][2] = (top + bottom) / (top - bottom);
+		P[3][2] = z_sign;
+		P[2][2] = z_sign * zFar / (zFar - zNear);
+		P[2][3] = -(zFar * zNear) / (zFar - zNear);
+	}
 
 	return glm::transpose(P) * getViewMatrix(position, rotation);
 }
@@ -280,6 +299,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const int P, int D, int M, int maxNumRendered,
 	bool useExactIntersection, bool usePrefetchingPipeline, bool useTensorCore,
 	const std::vector<float>& cpuCamPos, const std::vector<float>& cpuCamRot, float znear, float zfar, int* currOffset,
+	bool isOrtho, bool isFisheye, float k1, float k2, float k3, float k4, 
 	const std::vector<float>& cpuBackground,
 	const int width, int height,
 	const float* means3D,
@@ -321,7 +341,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const glm::vec3 cpuCamPosGlm = glm::make_vec3(cpuCamPos.data());
 	const glm::mat3 cpuCamRotGlm = glm::make_mat3(cpuCamRot.data());
 	const glm::mat4 viewmatrixGlm = getViewMatrix(cpuCamPosGlm, cpuCamRotGlm);
-	const glm::mat4 projmatrixGlm = getProjectionMatrix(width, height, cpuCamPosGlm, cpuCamRotGlm, focal_x, focal_y, zfar, znear);
+	const glm::mat4 projmatrixGlm = getProjectionMatrix(width, height, cpuCamPosGlm, cpuCamRotGlm, focal_x, focal_y, zfar, znear, isOrtho);
 
 	size_t chunk_size = required<GeometryState>(P);
 	char* chunkptr = geometryBuffer(chunk_size);
@@ -373,7 +393,7 @@ int CudaRasterizer::Rasterizer::forward(
 			(glm::vec3*)means3D, (glm::vec3*)shs, opacities, (flashgs::cov3d_t*)cov3D_precomp,
 			width, height, BLOCK_X, BLOCK_Y,
 			cpuCamPosGlm, cpuCamRotGlm, viewmatrixGlm, projmatrixGlm,
-			focal_x, focal_y, zfar, znear, tan_fovx, tan_fovy,
+			focal_x, focal_y, zfar, znear, tan_fovx, tan_fovy, isOrtho, isFisheye, k1, k2, k3, k4,
 			(float2*)geomState.means2D, (float4*)geomState.rgb_depth, (float4*)geomState.conic_opacity,
 			(uint64_t*)binningState.point_list_keys_unsorted, (uint32_t*)binningState.point_list_unsorted,
 			currOffset
@@ -403,6 +423,7 @@ int CudaRasterizer::Rasterizer::forward(
 			width, height,
 			focal_x, focal_y,
 			tan_fovx, tan_fovy,
+			isOrtho, isFisheye, k1, k2, k3, k4,
 			radii,
 			geomState.means2D,
 			geomState.cov3D,

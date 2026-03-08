@@ -34,7 +34,7 @@ void preprocess(int P, int D, int M,
 	glm::vec3* positions, glm::vec3* shs, const float* opacities, cov3d_t* cov3Ds,
 	int width, int height, int block_x, int block_y,
 	const glm::vec3 cam_position, const glm::mat3 cam_rotation, const glm::mat4 view_matrix, const glm::mat4 proj_matrix,
-	float focal_x, float focal_y, float zFar, float zNear, float tan_fovx, float tan_fovy,
+	float focal_x, float focal_y, float zFar, float zNear, float tan_fovx, float tan_fovy, bool is_ortho, bool is_fisheye, float k1, float k2, float k3, float k4,
 	float2* points_xy, float4* rgb_depth, float4* conic_opacity,
 	uint64_t* gaussian_keys_unsorted, uint32_t* gaussian_values_unsorted,
 	int* curr_offset, cudaStream_t stream = 0

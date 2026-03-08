@@ -106,7 +106,7 @@ __forceinline__ __device__ void getRect(const float2 p, int width, int height, i
 
 // Forward version of 2D covariance matrix computation
 __forceinline__ __device__ float3 computeCov2D(const glm::vec3& position, float focal_x, float focal_y, float tan_fovx, float tan_fovy,
-	cov3d_t cov3D, glm::mat4 viewmatrix)
+	cov3d_t cov3D, glm::mat4 viewmatrix, bool is_ortho, bool is_fisheye, float k1, float k2, float k3, float k4)
 {
 	// The following models the steps outlined by equations 29
 	// and 31 in "EWA Splatting" (Zwicker et al., 2002).
@@ -121,10 +121,47 @@ __forceinline__ __device__ float3 computeCov2D(const glm::vec3& position, float 
 	t.x = min(limx, max(-limx, txtz)) * t.z;
 	t.y = min(limy, max(-limy, tytz)) * t.z;
 
-	glm::mat3 J = glm::mat3(
-        focal_x / t.z, 0.0f, -(focal_x * t.x) / (t.z * t.z),
-        0.0f, focal_y / t.z, -(focal_y * t.y) / (t.z * t.z),
-        0, 0, 0);
+	glm::mat3 J;
+	if (is_ortho) {
+		// orhographic projection
+		// u = fx * x + cx, v = fy * y + cy
+		J = glm::mat3(
+			focal_x, 0.0f, 0,
+			0.0f, focal_y, 0,
+			0, 0, 0);
+	}
+	else if (is_fisheye) {
+		// Fisheye projection
+		float eps = 0.0000001f;
+		float x2 = t.x * t.x + eps;
+		float y2 = t.y * t.y;
+		float xy = t.x * t.y;
+		float x2y2 = x2 + y2 ;
+		float len_xy = length(glm::vec2({t.x, t.y})) + eps;
+		float x2y2z2_inv = 1.f / (x2y2 + t.z * t.z);
+
+		// Kannala-Brandt distortion
+		float theta = glm::atan(len_xy, t.z);
+		float theta2 = theta * theta;
+		float theta4 = theta2 * theta2;
+		float theta_d = theta * ( 1 + k1 * theta2 + k2 * theta4 + k3 * theta2 * theta4 + k4 * theta4 * theta4);
+		float D = 1 + 3 * k1 * theta2 + 5 * k2 * theta4 + 7 * k3 * theta2 * theta4 + 9 * k4 * theta4 * theta4;
+
+		float b =  theta / len_xy / x2y2;
+		float a = t.z * x2y2z2_inv / (x2y2);
+		J = glm::mat3(
+			focal_x * (x2 * a * D + y2 * b), focal_x * xy * (a * D - b),    - focal_x * t.x * x2y2z2_inv * D,
+			focal_y * xy  * (a * D - b),    focal_y * (y2 * a * D + x2 * b), - focal_y * t.y * x2y2z2_inv * D,
+			0, 0, 0
+		);
+	}
+	else {
+		// persperctive projection
+		J = glm::mat3(
+			focal_x / t.z, 0.0f, -(focal_x * t.x) / (t.z * t.z),
+			0.0f, focal_y / t.z, -(focal_y * t.y) / (t.z * t.z),
+			0, 0, 0);
+	}
 
 	glm::mat3 W = glm::mat3(
 		((float*)&viewmatrix)[0], ((float*)&viewmatrix)[4], ((float*)&viewmatrix)[8],
@@ -264,6 +301,7 @@ __global__ void preprocessCUDA(
 	int block_x, int block_y,
 	const float tan_fovx, float tan_fovy,
 	const float focal_x, float focal_y,
+	bool is_ortho, bool is_fisheye, float k1, float k2, float k3, float k4,
 	float2* __restrict__ points_xy,
 	cov3d_t* __restrict__ cov3Ds,
 	float4* __restrict__ rgb_depth,
@@ -304,12 +342,38 @@ __global__ void preprocessCUDA(
 				break;
 
 			// Transform point by projecting
-            float4 p_hom = transformPoint4x4(p_orig, (const float*)&projmatrix);
-            float p_w = 1.0f / (p_hom.w + 0.0000001f);
-			float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
+			float3 p_proj;
+			if (is_fisheye) {
+				// Fisheye Kannala-Brandt projection
+				float xy_len = glm::length(glm::vec2({p_view.x, p_view.y})) + 0.000001f;
+				float r = xy_len / (p_view.z + 0.000001f);
+
+				float theta = atan2(r, 1.0f);
+				if (abs(theta) > 3.14 * 0.44)
+					break; 
+
+				// Kannala-Brandt distortion
+				float theta2 = theta * theta;
+				float theta4 = theta2 * theta2;
+				float theta_d = theta * ( 1 + k1 * theta2 + k2 * theta4 + k3 * theta2 * theta4 + k4 * theta4 * theta4);
+
+				p_proj.x = 2 * p_view.x * focal_x * theta_d / (xy_len * W); // clip space
+				p_proj.y = 2 * p_view.y * focal_y * theta_d / (xy_len * H);
+				p_proj.z = 0;
+			}
+			else {
+				float4 p_hom = transformPoint4x4(p_orig, (const float*)&projmatrix);
+				if (is_ortho) {
+					p_proj = { p_hom.x, p_hom.y, 0}; // 正交投影无需透视除法
+				}
+				else {
+					float p_w = 1.0f / (p_hom.w + 0.0000001f);
+					p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
+				}
+			}
 
 			// Compute 2D screen-space covariance matrix
-			float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3Ds[idx_vec], viewmatrix);
+			float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3Ds[idx_vec], viewmatrix, is_ortho, is_fisheye, k1, k2, k3, k4);
 
 			// Invert covariance (EWA algorithm)
 			float det = (cov.x * cov.z - cov.y * cov.y);
@@ -437,7 +501,7 @@ void preprocess(int P, int D, int M,
 	glm::vec3* positions, glm::vec3* shs, const float* opacities, cov3d_t* cov3Ds,
 	int width, int height, int block_x, int block_y,
 	const glm::vec3 cam_position, const glm::mat3 cam_rotation, const glm::mat4 view_matrix, const glm::mat4 proj_matrix,
-	float focal_x, float focal_y, float zFar, float zNear, float tan_fovx, float tan_fovy,
+	float focal_x, float focal_y, float zFar, float zNear, float tan_fovx, float tan_fovy, bool is_ortho, bool is_fisheye, float k1, float k2, float k3, float k4,
 	float2* points_xy, float4* rgb_depth, float4* conic_opacity,
 	uint64_t* gaussian_keys_unsorted, uint32_t* gaussian_values_unsorted,
 	int* curr_offset, cudaStream_t stream
@@ -478,6 +542,7 @@ void preprocess(int P, int D, int M,
 		block_x, block_y,
 		tan_fovx, tan_fovy,
 		focal_x, focal_y,
+		is_ortho, is_fisheye, k1, k2, k3, k4,
 		points_xy,
 		cov3Ds,
 		rgb_depth,
