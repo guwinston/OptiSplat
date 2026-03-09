@@ -25,6 +25,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(DiffRast LANGUAGES C CUDA CXX)
 
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CUDA_STANDARD 17)
@@ -156,6 +157,34 @@ target_link_libraries(optisplat_test
 )
 
 
+# --- Python Binding ---
+
+if(NOT Python3_EXECUTABLE)
+    set(Python3_EXECUTABLE python3)
+endif()
+
+execute_process(
+    COMMAND "${Python3_EXECUTABLE}" -m pybind11 --cmakedir
+    OUTPUT_VARIABLE PYBIND11_CMAKE_DIR
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
+message(STATUS "Found pybind11 CMake dir: ${PYBIND11_CMAKE_DIR}")
+
+find_package(pybind11 PATHS "${PYBIND11_CMAKE_DIR}" REQUIRED)
+if(pybind11_FOUND)
+    pybind11_add_module(_C src/pybind.cc src/viewer.cc)
+    target_link_libraries(_C PRIVATE optisplat imgui glfw glad GL dl pthread)
+    target_include_directories(_C PRIVATE 
+        include
+        src
+		${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
+        ${CMAKE_CURRENT_LIST_DIR}/third_party
+		${CMAKE_CURRENT_LIST_DIR}/third_party/glm
+		${CMAKE_CURRENT_LIST_DIR}/third_party/eigen-3.4.0
+		${GLAD_DIR}/include
+    )
+endif()
 
 
 
