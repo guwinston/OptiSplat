@@ -1,4 +1,5 @@
 #include <pybind11/pybind11.h>
+#include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include <pybind11/eigen.h> // 必须包含，处理 Eigen 类型
 #include "camera.h"
@@ -8,6 +9,12 @@
 
 namespace py = pybind11;
 using namespace optisplat;
+
+py::array_t<float> copyToHost(uintptr_t ptr, int h, int w, int c) {
+    auto result = py::array_t<float>({h, w, c});
+    cudaMemcpy(result.mutable_data(), (void*)ptr, h * w * c * sizeof(float), cudaMemcpyDeviceToHost);
+    return result;
+}
 
 PYBIND11_MODULE(_C, m) {
     // 导出 GsConfig 结构体
@@ -84,4 +91,5 @@ PYBIND11_MODULE(_C, m) {
     m.def("focal2fov", &focal2fov);
     m.def("readCamerasFromJson", &Utils::readCamerasFromJson, "Read cameras from a JSON file");
     m.def("runViewer", &runViewer, "run Guassian Splatting Viewer");
+    m.def("copyToHost", &copyToHost);
 }

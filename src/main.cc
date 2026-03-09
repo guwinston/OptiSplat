@@ -1,4 +1,4 @@
-
+#include <filesystem>
 
 #include "render.h"
 #include "utils.h"
@@ -17,7 +17,7 @@ int main(int argc, char** argv) {
 
     bool debug = false;
     bool testPerformance = true;
-    bool bRunViewer = false;
+    bool bRunViewer = true;
 	GsConfig config;
     config.modelPath = "/mnt/e/Dataset/GaussianSplattingModels/bicycle/point_cloud/iteration_30000/point_cloud.ply";
     config.cameraPath = "/mnt/e/Dataset/GaussianSplattingModels/bicycle/cameras.json";
@@ -50,15 +50,17 @@ int main(int argc, char** argv) {
         float numRendered = renderer->render(camera, outImage, outAllmap, debug);
         auto t1 = Utils::nowUs();
         time += (t1-t0)/ 1000.0f; // Convert to milliseconds
-        // progress.show_progress(i+1, (t1-t0) / 1000, numRendered);
+        progress.show_progress(i+1, (t1-t0) / 1000, numRendered);
         // break;
     }
     progress.close();
 
-    std::vector<std::string> filenames = { "output/output.jpg" };
+    std::filesystem::path mainFilePath(__FILE__);
+    std::filesystem::path projectDir = mainFilePath.parent_path().parent_path();
+    std::vector<std::string> filenames = { (projectDir / "output/output.jpg").string() };
     Utils::saveImages(outImage, 1, camera.height, camera.width, filenames);
     Utils::saveAllMaps(outAllmap, 1, camera.height, camera.width, filenames);
-    Utils::saveCudaArrayToBin("output/output.bin" , outImage, camera.height * camera.width * 4);
+    Utils::saveCudaArrayToBin((projectDir / "output/output.bin").string() , outImage, camera.height * camera.width * 4);
     std::cout << "Average time: " << time / cameras.size() << " ms" << std::endl;
     std::cout << "Memory usage: " << Utils::nowGPUMB() - m0 << " MB" << std::endl;
     

@@ -3,6 +3,9 @@
 #define TCGS_H
 
 #ifdef _WIN32
+#ifndef uint
+    typedef unsigned int uint;
+#endif
     #define TCGS_API __declspec(dllexport)
 #else
     #define TCGS_API __attribute__((visibility("default")))

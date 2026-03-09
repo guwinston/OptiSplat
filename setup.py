@@ -12,18 +12,20 @@ class CMakeExtension(Extension):
 class CMakeBuild(build_ext):
     def build_extension(self, ext):
         extdir = os.path.abspath(os.path.dirname(self.get_ext_fullpath(ext.name)))
+        cfg = 'Release'
         
         # 这里的参数要和你在命令行 cmake .. 时传的一致
         cmake_args = [
             f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={extdir}",
             f"-DPYTHON_EXECUTABLE={sys.executable}",
-            "-DCMAKE_BUILD_TYPE=Release", # 默认 Release 提高渲染性能
+            f"-DCMAKE_BUILD_TYPE={cfg}", # 默认 Release 提高渲染性能
         ]
 
         build_args = []
-        if sys.platform.startswith("win"):
+        if sys.platform.startswith("win") or sys.platform.startswith("Win"):
             cmake_args += ["-A", "x64"]
-            build_args += ["--config", "Release"]
+            cmake_args += [f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_{cfg.upper()}={extdir}"]
+            build_args += ["--config", f"{cfg}"]
 
         if not os.path.exists(self.build_temp):
             os.makedirs(self.build_temp)

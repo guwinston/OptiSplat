@@ -45,7 +45,7 @@ target_include_directories(gaussian_splatting PUBLIC
 )
 
 set_target_properties(gaussian_splatting PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-	CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    CUDA_SEPARABLE_COMPILATION OFF
+	CUDA_RESOLVE_DEVICE_SYMBOLS OFF
 	CUDA_ARCHITECTURES "75;86;89"
 )

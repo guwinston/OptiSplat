@@ -219,7 +219,7 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
         gScrollOffset = 0.0f;
 
         // --- A. 纯渲染过程 (测量开始) ---
-        auto renderStart = std::chrono::high_resolution_clock::now();
+        std::chrono::high_resolution_clock::time_point renderStart, renderEnd;
         float* dOutAllMap = nullptr; 
         workCameras[currentCamIdx].setResolution(width, height);
 
@@ -228,13 +228,17 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
             cudaGraphicsMapResources(1, &cuda_pbo_resource, 0);
             float* dMappedPtr; size_t mappedSize;
             cudaGraphicsResourceGetMappedPointer((void**)&dMappedPtr, &mappedSize, cuda_pbo_resource);
-            numRendered = renderer->render(workCameras[currentCamIdx], dMappedPtr, dOutAllMap, debug);
+            renderStart = std::chrono::high_resolution_clock::now();
+            numRendered = renderer->render(workCameras[currentCamIdx], dOutImage, dOutAllMap, debug);
+            renderEnd = std::chrono::high_resolution_clock::now();
+            cudaMemcpy(dMappedPtr, dOutImage, imgSize, cudaMemcpyDeviceToDevice);
             cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0);
         } else {
+            renderStart = std::chrono::high_resolution_clock::now();
             numRendered = renderer->render(workCameras[currentCamIdx], dOutImage, dOutAllMap, debug);
+            renderEnd = std::chrono::high_resolution_clock::now();
         }
-        
-        auto renderEnd = std::chrono::high_resolution_clock::now();
+
         float currentRenderMs = std::chrono::duration<float, std::milli>(renderEnd - renderStart).count();
         avgRenderMs = 0.95f * avgRenderMs + 0.05f * currentRenderMs; // 低通滤波平滑显示
 

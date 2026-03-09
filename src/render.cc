@@ -208,6 +208,7 @@ float GaussianRender<D>::render(GsCamera& inCamera, float*& outImage, float*& ou
 		);
 	}
 
+	cudaDeviceSynchronize();
 	outImage = cudaImage;
 	outAllMap = cudaAllMap;
 

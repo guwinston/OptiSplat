@@ -37,7 +37,6 @@ find_package(CUDAToolkit REQUIRED)
 find_package(OpenMP REQUIRED COMPONENTS CXX)
 
 if(WIN32)
-    set(CMAKE_GENERATOR_TOOLSET "v143,version=14.36")
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MD")
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp")
@@ -126,8 +125,8 @@ target_link_libraries(optisplat PRIVATE
 
 set_target_properties(optisplat PROPERTIES 
     CUDA_ARCHITECTURES "75;86;89"
-    CUDA_SEPARABLE_COMPILATION ON
-    CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_RESOLVE_DEVICE_SYMBOLS OFF
 )
 
 add_executable(optisplat_test
@@ -145,15 +144,21 @@ target_include_directories(optisplat_test PRIVATE
 	${GLAD_DIR}/include
 )
 
+find_package(OpenGL REQUIRED)
+if(WIN32)
+    # Windows 下 OpenGL 库叫 opengl32.lib，且不需要 dl 和 pthread
+    set(EXTRA_LIBS opengl32)
+else()
+    # Linux 下需要 GL, dl, pthread
+    set(EXTRA_LIBS GL dl pthread)
+endif()
 target_link_libraries(optisplat_test
 	PRIVATE 
 	optisplat 
 	imgui 
     glfw    # 这里直接写 glfw 名字，CMake 会自动寻找 add_subdirectory 定义的目标
 	glad
-    GL      # Linux 下需要显式链接 OpenGL 库
-    dl      # Linux 下需要
-    pthread # Linux 下需要
+    ${EXTRA_LIBS}
 )
 
 
@@ -166,15 +171,15 @@ endif()
 execute_process(
     COMMAND "${Python3_EXECUTABLE}" -m pybind11 --cmakedir
     OUTPUT_VARIABLE PYBIND11_CMAKE_DIR
+    ERROR_QUIET
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
-message(STATUS "Found pybind11 CMake dir: ${PYBIND11_CMAKE_DIR}")
-
-find_package(pybind11 PATHS "${PYBIND11_CMAKE_DIR}" REQUIRED)
+find_package(pybind11 PATHS "${PYBIND11_CMAKE_DIR}" QUIET)
 if(pybind11_FOUND)
+    message(STATUS "Found pybind11, building python bindings...")
     pybind11_add_module(_C src/pybind.cc src/viewer.cc)
-    target_link_libraries(_C PRIVATE optisplat imgui glfw glad GL dl pthread)
+    target_link_libraries(_C PRIVATE optisplat imgui glfw glad ${EXTRA_LIBS})
     target_include_directories(_C PRIVATE 
         include
         src
@@ -184,6 +189,8 @@ if(pybind11_FOUND)
 		${CMAKE_CURRENT_LIST_DIR}/third_party/eigen-3.4.0
 		${GLAD_DIR}/include
     )
+else()
+    message(WARNING "pybind11 not found. Python bindings (_C) will not be built.")
 endif()
 
 

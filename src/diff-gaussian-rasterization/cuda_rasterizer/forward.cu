@@ -343,7 +343,7 @@ renderCUDA(
 	const float4* __restrict__ conic_opacity,
 	float* __restrict__ final_T,
 	uint32_t* __restrict__ n_contrib,
-	const float3 __restrict__ bg_color,
+	const float3  bg_color,
 	float* __restrict__ out_color,
 	float* __restrict__ invdepth)
 {

@@ -1,4 +1,3 @@
-import torch
 import sys
 import os
 import time
@@ -13,25 +12,6 @@ try:
 except ImportError as e:
     print(f"Still failed: {e}")
 
-def ptr_to_tensor(ptr, height, width, channels, device_id=0):
-    """将 C++ 传回的 CUDA 指针包装为 torch.Tensor"""
-    if ptr == 0:
-        return None
-    
-    # 构造 CUDA Array Interface 字典
-    ctx = {
-        "shape": (height, width, channels),
-        "typestr": "<f4",     # <f4 代表 float32
-        "data": (ptr, False), # 指针地址，False 表示非只读
-        "version": 3,
-    }
-    
-    # 创建一个哑对象来承载接口
-    class Holder:
-        def __init__(self, interface):
-            self.__cuda_array_interface__ = interface
-
-    return torch.as_tensor(Holder(ctx), device=f"cuda:{device_id}")
 
 if __name__ == "__main__":
     debug = False
@@ -70,10 +50,9 @@ if __name__ == "__main__":
     print(f"Rendering shape: {cam.width}x{cam.height}")
     print(f"AVG FPS: {1/avg_time:.2f}, AVG Delay: {avg_time*1000:.2f} ms")
 
-    image_tensor = ptr_to_tensor(img_ptr, cam.height, cam.width, 4) # 4 通道 RGBA
-    depth_tensor = ptr_to_tensor(map_ptr, cam.height, cam.width, 1) # 深度图是 1 通道
+    image = optisplat.copyToHost(img_ptr, cam.height, cam.width, 4) # 4 通道 RGBA
+    depth = optisplat.copyToHost(map_ptr, cam.height, cam.width, 1) # 深度图是 1 通道
 
-    if image_tensor is not None:
-        img_np = image_tensor.detach().cpu().numpy()
-        plt.imshow(img_np[..., :3]) # 只显示 RGB
+    if image is not None:
+        plt.imshow(image[..., :3]) # 只显示 RGB
         plt.show()
