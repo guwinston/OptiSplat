@@ -7,6 +7,7 @@
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 #include <cuda_runtime.h>
+#include <cuda_gl_interop.h>
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -139,9 +140,25 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
+    // PBO 初始化
+    GLuint pbo;
+    glGenBuffers(1, &pbo);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
+    size_t imgSize = width * height * 4 * sizeof(float);
+    glBufferData(GL_PIXEL_UNPACK_BUFFER, imgSize, nullptr, GL_STREAM_DRAW);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+
+    // 动态识别系统
+    cudaGraphicsResource_t cuda_pbo_resource = nullptr;
+    cudaError_t regErr = cudaGraphicsGLRegisterBuffer(&cuda_pbo_resource, pbo, cudaGraphicsRegisterFlagsWriteDiscard);
+    bool bSupportZeroCopy = (regErr == cudaSuccess);
+    if (!bSupportZeroCopy) {
+        GS_WARNING("Zero-Copy not supported (possibly WSL2). Falling back to Pinned-PBO copy mode.");
+        cudaGetLastError(); // 清除残留错误防止干扰后续分配
+    }
+
     // 锁页内存 (Pinned Memory) 加速显存到内存的 DMA 拷贝
     float* hPinnedPtr = nullptr;
-    size_t imgSize = width * height * 4 * sizeof(float);
     cudaHostAlloc((void**)&hPinnedPtr, imgSize, cudaHostAllocDefault);
     
     // 设备侧图像缓冲区
@@ -205,16 +222,36 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
         auto renderStart = std::chrono::high_resolution_clock::now();
         float* dOutAllMap = nullptr; 
         workCameras[currentCamIdx].setResolution(width, height);
-        numRendered = renderer->render(workCameras[currentCamIdx], dOutImage, dOutAllMap, debug);
-        auto renderEnd = std::chrono::high_resolution_clock::now();
+
+        // 原生系统用零拷贝，WSL2 用中间缓冲区， WSL不支持cuda-opengl互操作
+        if (bSupportZeroCopy) {
+            cudaGraphicsMapResources(1, &cuda_pbo_resource, 0);
+            float* dMappedPtr; size_t mappedSize;
+            cudaGraphicsResourceGetMappedPointer((void**)&dMappedPtr, &mappedSize, cuda_pbo_resource);
+            numRendered = renderer->render(workCameras[currentCamIdx], dMappedPtr, dOutAllMap, debug);
+            cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0);
+        } else {
+            numRendered = renderer->render(workCameras[currentCamIdx], dOutImage, dOutAllMap, debug);
+        }
         
+        auto renderEnd = std::chrono::high_resolution_clock::now();
         float currentRenderMs = std::chrono::duration<float, std::milli>(renderEnd - renderStart).count();
         avgRenderMs = 0.95f * avgRenderMs + 0.05f * currentRenderMs; // 低通滤波平滑显示
 
         // --- B. 后处理过程 (包含 DMA 拷贝与纹理更新) ---
-        cudaMemcpy(hPinnedPtr, dOutImage, imgSize, cudaMemcpyDeviceToHost);
-        glBindTexture(GL_TEXTURE_2D, imageTexture);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_FLOAT, hPinnedPtr);
+        if (!bSupportZeroCopy) {
+            // 拷贝模式：直接从 Pinned Memory 上传到纹理，跳过 PBO 中转
+            cudaMemcpy(hPinnedPtr, dOutImage, imgSize, cudaMemcpyDeviceToHost);
+            glBindTexture(GL_TEXTURE_2D, imageTexture);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_FLOAT, hPinnedPtr);
+        }
+        else {
+            // 零拷贝模式：数据已由渲染器直接写入 PBO 对应的显存地址，仅需更新纹理链接
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
+            glBindTexture(GL_TEXTURE_2D, imageTexture);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_FLOAT, 0); 
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        }
 
         // --- C. UI 与性能看板绘制 ---
         ImGui_ImplOpenGL3_NewFrame();
@@ -227,12 +264,20 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
         ImGui::Separator();
         
         // 显示纯渲染耗时与对应 FPS
-        ImGui::Text("GPU Render: %.2f ms (%.1f FPS)", avgRenderMs, 1000.0f / (avgRenderMs + 1e-6f));
+        ImGui::Text("Render (Pure):");
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.0f, 1.0f)); // 比如改成红色
+        ImGui::BulletText("Real-time: %.2f ms (%.1f FPS)", currentRenderMs, 1000.0f / (currentRenderMs + 1e-6f));
+        ImGui::PopStyleColor();
+        ImGui::BulletText("Average:   %.2f ms (%.1f FPS)", avgRenderMs, 1000.0f / (avgRenderMs + 1e-6f));
         
         // 显示包含拷贝在内的总帧耗时
         float currentTotalMs = deltaTime * 1000.0f;
         avgTotalMs = 0.95f * avgTotalMs + 0.05f * currentTotalMs;
-        ImGui::Text("Total Frame: %.2f ms (%.1f FPS)", avgTotalMs, 1000.0f / (avgTotalMs + 1e-6f));
+        ImGui::Text("Total Loop (Incl. Copy/UI):");
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.0f, 1.0f)); // 比如改成红色
+        ImGui::BulletText("Real-time: %.2f ms (%.1f FPS)", currentTotalMs, 1000.0f / (currentTotalMs + 1e-6f));
+        ImGui::PopStyleColor();
+        ImGui::BulletText("Average:   %.2f ms (%.1f FPS)", avgTotalMs, 1000.0f / (avgTotalMs + 1e-6f));
         ImGui::End();
 
         ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_FirstUseEver);
@@ -255,9 +300,9 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
             ImGui::DragFloat("k4", &workCameras[currentCamIdx].k4, 0.001f, -1.0f, 1.0f, "%.4f");
             if (ImGui::Button("Reset Distortion")) {
                 workCameras[currentCamIdx].k1 = cameras[currentCamIdx].k1;
-                workCameras[currentCamIdx].k1 = cameras[currentCamIdx].k2;
-                workCameras[currentCamIdx].k1 = cameras[currentCamIdx].k3;
-                workCameras[currentCamIdx].k1 = cameras[currentCamIdx].k4;
+                workCameras[currentCamIdx].k2 = cameras[currentCamIdx].k2;
+                workCameras[currentCamIdx].k3 = cameras[currentCamIdx].k3;
+                workCameras[currentCamIdx].k4 = cameras[currentCamIdx].k4;
             }
         }
         // 正交缩放 (仅在正交模式下显示)
@@ -321,8 +366,11 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
     GS_INFO("Shutting down...");
 
     // --- 7. 资源清理与释放 ---
+    if (bSupportZeroCopy) 
+        cudaGraphicsUnregisterResource(cuda_pbo_resource);
     cudaFreeHost(hPinnedPtr);
     cudaFree(dOutImage);
+    glDeleteBuffers(1, &pbo); // 清理 PBO
     glDeleteTextures(1, &imageTexture);
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
