@@ -287,6 +287,11 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
         ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_FirstUseEver);
         ImGui::Begin("Camera Settings", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
         ImGui::Text("Camera Settings");
+        static bool forceSquarePixel = true;
+        ImGui::Checkbox("Force Square Pixel", &forceSquarePixel);
+        if (forceSquarePixel) {
+            workCameras[currentCamIdx].fy = workCameras[currentCamIdx].fx;
+        }
         int currentMode = (int)workCameras[currentCamIdx].model; 
         if (ImGui::Combo("Projection", &currentMode, CameraModelNames, IM_ARRAYSIZE(CameraModelNames))) {
             workCameras[currentCamIdx].model = (CameraModel)currentMode;
@@ -311,7 +316,7 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
         }
         // 正交缩放 (仅在正交模式下显示)
         else if (currentMode == (int)CameraModel::ORTHOGRAPHIC) {
-            float focalScale = workCameras[currentCamIdx].fy / workCameras[currentCamIdx].fx;
+            float focalScale = forceSquarePixel ? 1 : workCameras[currentCamIdx].fy / workCameras[currentCamIdx].fx;
             if (ImGui::SliderFloat("Ortho Scale", &workCameras[currentCamIdx].fx, 0.1f, 2000.0f)) {
                 workCameras[currentCamIdx].fy = workCameras[currentCamIdx].fx * focalScale;
             }
@@ -329,7 +334,7 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
         if (currentMode != (int)CameraModel::ORTHOGRAPHIC) { // 正交模式下，FOV 没有意义
             float fovDegreesX = rad2Deg(focal2fov(workCameras[currentCamIdx].fx, workCameras[currentCamIdx].width));
             float fovDegreesY = rad2Deg(focal2fov(workCameras[currentCamIdx].fy, workCameras[currentCamIdx].height));
-            float focalScale = workCameras[currentCamIdx].fy / workCameras[currentCamIdx].fx; // 记录当前的 fx/fy 比例（通常为 1.0，但为了兼容非正方形像素，我们动态计算）
+            float focalScale = forceSquarePixel ? 1 : workCameras[currentCamIdx].fy / workCameras[currentCamIdx].fx; // 记录当前的 fx/fy 比例（通常为 1.0，但为了兼容非正方形像素，我们动态计算）
             if (ImGui::SliderFloat("Field of View", &fovDegreesX, 1.0f, 179.0f, "%.2f deg")) {
                 workCameras[currentCamIdx].fx = fov2focal(deg2Rad(fovDegreesX), workCameras[currentCamIdx].width);
                 workCameras[currentCamIdx].fy = workCameras[currentCamIdx].fx * focalScale;
