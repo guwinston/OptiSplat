@@ -447,7 +447,7 @@ int CudaRasterizer::Rasterizer::forward(
 		}
 
 		if (maxNumRendered < 0) {
-			std::cout << "Warning: maxNumRendered is negative, ignoring limit on number of rendered Gaussians." << std::endl;
+			// std::cout << "Warning: maxNumRendered is negative, ignoring limit on number of rendered Gaussians." << std::endl;
 			size_t binning_chunk_size = required<BinningState>(num_rendered);
 			char* binning_chunkptr = binningBuffer(binning_chunk_size);
 			binningState = BinningState::fromChunk(binning_chunkptr, num_rendered);

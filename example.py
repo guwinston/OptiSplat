@@ -24,6 +24,7 @@ if __name__ == "__main__":
     config.bUseFlashGSExactIntersection = True
     config.bUseFlashGSPrefetchingPipeline = False
     config.bUseTensorCore = True
+    config.maxNumRenderedGaussians = 20000000; # 预分配的中间显存，预分配显存可以提高渲染效率，值可以根据实际情况调整
 
     renderer = optisplat.IGaussianRender.CreateRenderer(config)
     cameras = optisplat.readCamerasFromJson(config.cameraPath)

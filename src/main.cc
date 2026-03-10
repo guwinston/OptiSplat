@@ -25,6 +25,7 @@ int main(int argc, char** argv) {
     config.bUseFlashGSExactIntersection = true;
     config.bUseFlashGSPrefetchingPipeline = false;
     config.bUseTensorCore = true;
+    config.maxNumRenderedGaussians = 200000000; // 预分配中间显存，设为-1表示不开启，是bUseFlashGSExactIntersection=True生效的必要条件
 
     std::vector<GsCamera> cameras = Utils::readCamerasFromJson(config.cameraPath);
     std::shared_ptr<IGaussianRender> renderer = IGaussianRender::CreateRenderer(config);
@@ -62,6 +63,7 @@ int main(int argc, char** argv) {
     Utils::saveAllMaps(outAllmap, 1, camera.height, camera.width, filenames);
     Utils::saveCudaArrayToBin((projectDir / "output/output.bin").string() , outImage, camera.height * camera.width * 4);
     std::cout << "Average time: " << time / cameras.size() << " ms" << std::endl;
+    std::cout << "Average FPS:  " << 1000 / (time / cameras.size()) << std::endl;
     std::cout << "Memory usage: " << Utils::nowGPUMB() - m0 << " MB" << std::endl;
     
     return 0;
