@@ -335,10 +335,9 @@ void SceneData<D>::initResource(std::string modelPath, std::string cacheSavePath
 	// For SOG: it loads directly.
 	LoadResult<D> loaded;
 	const auto loader = LoaderFactory<D>::create(modelPath, cacheSavePath, rebuildBinaryCache);
-	const bool isSogInput = std::filesystem::path(modelPath).extension().string() == ".sog";
-	const bool useCachePath = !isSogInput && !rebuildBinaryCache &&
-	                          !cacheSavePath.empty() && std::filesystem::exists(cacheSavePath);
-	loader->load(useCachePath ? cacheSavePath : modelPath, loaded);
+	const std::string loadPath =
+		LoaderFactory<D>::resolveLoadPath(modelPath, cacheSavePath, rebuildBinaryCache);
+	loader->load(loadPath, loaded);
 
 	numPoints = loaded.numPoints;
 	gaussianPoints = std::move(loaded.points);

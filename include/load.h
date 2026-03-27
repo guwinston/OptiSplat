@@ -92,6 +92,14 @@ public:
         const std::string& sogCachePath,
         bool               rebuildCache);
 
+    // Resolve which file should actually be loaded. When a cached SOG
+    // exists but libwebp decode support is unavailable, this falls back
+    // to the original source file instead of the cache.
+    static std::string resolveLoadPath(
+        const std::string& modelPath,
+        const std::string& sogCachePath,
+        bool               rebuildCache);
+
     // Peek model metadata without creating a full loader.
     static bool peekInfo(const std::string& modelPath, int* outShDegree, int* outNumPoints);
 

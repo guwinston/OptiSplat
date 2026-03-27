@@ -506,6 +506,20 @@ private:
     WebPFreeFn               freeFn_                  = nullptr;
 };
 
+const char* webpInstallHint() {
+#if defined(_WIN32)
+    return "Install libwebp (for example: vcpkg install libwebp:x64-windows) or place libwebp.dll next to the executable.";
+#else
+    return "Install libwebp (for example on Ubuntu/Debian: sudo apt-get install -y libwebp-dev).";
+#endif
+}
+
+std::string missingWebPDecoderMessage(const std::string& path) {
+    return "libwebp decoder unavailable for SOG import: " + path +
+           ". No fallback is available because the source file itself is SOG. " +
+           webpInstallHint();
+}
+
 
 // ----------------------------------------------------------------------
 // SOG quantization helpers
@@ -1009,6 +1023,13 @@ void PlyLoader<D>::load(const std::string& path, LoadResult<D>& result) {
 
     // --- 4) Write SOG cache if requested ---
     if (!cachePath_.empty()) {
+        DynamicWebP& webp = DynamicWebP::instance();
+        if (!webp.canEncode()) {
+            GS_WARNING("Skipping SOG cache write for %s because libwebp encoder is unavailable. %s",
+                       cachePath_.c_str(), webpInstallHint());
+            return;
+        }
+
         const std::filesystem::path cacheDir =
             std::filesystem::path(cachePath_).parent_path();
         if (!cacheDir.empty() && !std::filesystem::exists(cacheDir)) {
@@ -1061,7 +1082,7 @@ void SogLoader<D>::load(const std::string& path, LoadResult<D>& result) {
 
     DynamicWebP& webp = DynamicWebP::instance();
     if (!webp.canDecode())
-        throw std::runtime_error("libwebp decoder unavailable for SOG import.");
+        throw std::runtime_error(missingWebPDecoderMessage(path));
 
     ZipArchiveReader zip(path);
     if (!zip.hasEntry("meta.json"))
@@ -1365,7 +1386,7 @@ std::unique_ptr<IGaussianLoader<D>> LoaderFactory<D>::create(
     // For PLY (and future formats): use SOG cache when available.
     const bool cacheExists = !sogCachePath.empty() &&
                              std::filesystem::exists(sogCachePath);
-    if (!rebuildCache && cacheExists) {
+    if (!rebuildCache && cacheExists && DynamicWebP::instance().canDecode()) {
         GS_INFO("LoaderFactory: using SOG cache %s", sogCachePath.c_str());
         return std::make_unique<SogLoader<D>>();
     }
@@ -1376,6 +1397,31 @@ std::unique_ptr<IGaussianLoader<D>> LoaderFactory<D>::create(
     GS_INFO("LoaderFactory: loading PLY %s, cache -> %s",
             modelPath.c_str(), writePath.c_str());
     return std::make_unique<PlyLoader<D>>(writePath);
+}
+
+template <int D>
+std::string LoaderFactory<D>::resolveLoadPath(
+    const std::string& modelPath,
+    const std::string& sogCachePath,
+    bool               rebuildCache)
+{
+    if (hasExtension(modelPath, ".sog"))
+        return modelPath;
+
+    const std::string resolvedCachePath = sogCachePath.empty() ?
+        defaultSogCachePath(modelPath) : sogCachePath;
+    const bool cacheExists = !resolvedCachePath.empty() &&
+                             std::filesystem::exists(resolvedCachePath);
+    if (rebuildCache || !cacheExists)
+        return modelPath;
+
+    DynamicWebP& webp = DynamicWebP::instance();
+    if (webp.canDecode())
+        return resolvedCachePath;
+
+    GS_WARNING("libwebp decoder unavailable for cached SOG %s. Falling back to source file %s. %s",
+               resolvedCachePath.c_str(), modelPath.c_str(), webpInstallHint());
+    return modelPath;
 }
 
 } // namespace optisplat
