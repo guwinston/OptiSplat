@@ -22,6 +22,12 @@
 #include <vector>
 
 #if defined(_WIN32)
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
 #  include <windows.h>   // LoadLibrary / GetProcAddress / FreeLibrary
 #else
 #  include <dlfcn.h>     // dlopen / dlsym / dlclose
@@ -1285,49 +1291,60 @@ void SogLoader<D>::load(const std::string& path, LoadResult<D>& result) {
     float minX =  FLT_MAX, minY =  FLT_MAX, minZ =  FLT_MAX;
     float maxX = -FLT_MAX, maxY = -FLT_MAX, maxZ = -FLT_MAX;
 
-    #pragma omp parallel for schedule(static) \
-        reduction(min:minX,minY,minZ) reduction(max:maxX,maxY,maxZ)
-    for (int i = 0; i < numPoints; ++i) {
-        const size_t base = static_cast<size_t>(i) * 4;
+    #pragma omp parallel
+    {
+        float localMinX =  FLT_MAX, localMinY =  FLT_MAX, localMinZ =  FLT_MAX;
+        float localMaxX = -FLT_MAX, localMaxY = -FLT_MAX, localMaxZ = -FLT_MAX;
 
-        const uint16_t qx = static_cast<uint16_t>(meansLData[base+0]) |
-                            (static_cast<uint16_t>(meansUData[base+0]) << 8U);
-        const uint16_t qy = static_cast<uint16_t>(meansLData[base+1]) |
-                            (static_cast<uint16_t>(meansUData[base+1]) << 8U);
-        const uint16_t qz = static_cast<uint16_t>(meansLData[base+2]) |
-                            (static_cast<uint16_t>(meansUData[base+2]) << 8U);
+        #pragma omp for schedule(static)
+        for (int i = 0; i < numPoints; ++i) {
+            const size_t base = static_cast<size_t>(i) * 4;
 
-        const float px = posLut[0][qx];
-        const float py = posLut[1][qy];
-        const float pz = posLut[2][qz];
-        result.points[i][0] = px;
-        result.points[i][1] = py;
-        result.points[i][2] = pz;
-        minX = std::min(minX, px); minY = std::min(minY, py); minZ = std::min(minZ, pz);
-        maxX = std::max(maxX, px); maxY = std::max(maxY, py); maxZ = std::max(maxZ, pz);
+            const uint16_t qx = static_cast<uint16_t>(meansLData[base+0]) |
+                                (static_cast<uint16_t>(meansUData[base+0]) << 8U);
+            const uint16_t qy = static_cast<uint16_t>(meansLData[base+1]) |
+                                (static_cast<uint16_t>(meansUData[base+1]) << 8U);
+            const uint16_t qz = static_cast<uint16_t>(meansLData[base+2]) |
+                                (static_cast<uint16_t>(meansUData[base+2]) << 8U);
 
-        result.rot[i] = unpackQuaternion(quatsData + base);
+            const float px = posLut[0][qx];
+            const float py = posLut[1][qy];
+            const float pz = posLut[2][qz];
+            result.points[i][0] = px;
+            result.points[i][1] = py;
+            result.points[i][2] = pz;
+            localMinX = std::min(localMinX, px); localMinY = std::min(localMinY, py); localMinZ = std::min(localMinZ, pz);
+            localMaxX = std::max(localMaxX, px); localMaxY = std::max(localMaxY, py); localMaxZ = std::max(localMaxZ, pz);
 
-        result.scale[i][0] = decodedScaleCB[scalesData[base+0]];
-        result.scale[i][1] = decodedScaleCB[scalesData[base+1]];
-        result.scale[i][2] = decodedScaleCB[scalesData[base+2]];
+            result.rot[i] = unpackQuaternion(quatsData + base);
 
-        result.shs[i][0] = sh0Codebook[sh0Data[base+0]];
-        result.shs[i][1] = sh0Codebook[sh0Data[base+1]];
-        result.shs[i][2] = sh0Codebook[sh0Data[base+2]];
-        result.opacity[i] = opacityLut[sh0Data[base+3]];
+            result.scale[i][0] = decodedScaleCB[scalesData[base+0]];
+            result.scale[i][1] = decodedScaleCB[scalesData[base+1]];
+            result.scale[i][2] = decodedScaleCB[scalesData[base+2]];
 
-        if (shNCentroidDecodedData) {
-            const int label = static_cast<int>(shNLabelsData[base+0]) |
-                              (static_cast<int>(shNLabelsData[base+1]) << 8);
-            if (label >= 0 && label < shNPaletteCount) {
-                std::memcpy(result.shs[i].data() + 3,
-                            shNCentroidDecodedData +
-                            static_cast<size_t>(label) * shCopyFloatCount,
-                            shCopyBytes);
-            } else {
-                std::memset(result.shs[i].data() + 3, 0, shCopyBytes);
+            result.shs[i][0] = sh0Codebook[sh0Data[base+0]];
+            result.shs[i][1] = sh0Codebook[sh0Data[base+1]];
+            result.shs[i][2] = sh0Codebook[sh0Data[base+2]];
+            result.opacity[i] = opacityLut[sh0Data[base+3]];
+
+            if (shNCentroidDecodedData) {
+                const int label = static_cast<int>(shNLabelsData[base+0]) |
+                                  (static_cast<int>(shNLabelsData[base+1]) << 8);
+                if (label >= 0 && label < shNPaletteCount) {
+                    std::memcpy(result.shs[i].data() + 3,
+                                shNCentroidDecodedData +
+                                static_cast<size_t>(label) * shCopyFloatCount,
+                                shCopyBytes);
+                } else {
+                    std::memset(result.shs[i].data() + 3, 0, shCopyBytes);
+                }
             }
+        }
+
+        #pragma omp critical
+        {
+            minX = std::min(minX, localMinX); minY = std::min(minY, localMinY); minZ = std::min(minZ, localMinZ);
+            maxX = std::max(maxX, localMaxX); maxY = std::max(maxY, localMaxY); maxZ = std::max(maxZ, localMaxZ);
         }
     }
     tPointLoopDone = Utils::nowUs();
