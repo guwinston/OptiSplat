@@ -3,6 +3,7 @@
 #include <vector>
 #include <chrono>
 #include <algorithm>
+#include <cstdlib>
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -109,7 +110,12 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
     }
 
     // --- 2. 初始化窗口与 OpenGL 环境 ---
-    if (!glfwInit()) return -1;
+    if (!glfwInit()) {
+        const char* display = std::getenv("DISPLAY");
+        const char* waylandDisplay = std::getenv("WAYLAND_DISPLAY");
+        GS_ERROR("glfwInit failed. DISPLAY=%s WAYLAND_DISPLAY=%s. Please ensure a valid GUI session (X11/Wayland), e.g. export DISPLAY=:0", display ? display : "", waylandDisplay ? waylandDisplay : "");
+        return -1;
+    }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -120,12 +126,23 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
     // int width = workCameras[0].width;
     // int height = workCameras[0].height;
     GLFWwindow* window = glfwCreateWindow(width, height, "Gaussian Splatting Viewer", NULL, NULL);
-    if (!window) return -1;
+    if (!window) {
+        const char* display = std::getenv("DISPLAY");
+        const char* waylandDisplay = std::getenv("WAYLAND_DISPLAY");
+        GS_ERROR("glfwCreateWindow failed, DISPLAY=%s WAYLAND_DISPLAY=%s. Please ensure a valid GUI session (X11/Wayland), e.g. export DISPLAY=:0", display ? display : "", waylandDisplay ? waylandDisplay : "");
+        glfwTerminate();
+        return -1;
+    }
     
     glfwMakeContextCurrent(window);
     glfwSetScrollCallback(window, scrollCallback);
     glfwSwapInterval(1); // 开启垂直同步
-    gladLoadGLLoader((GLADloadproc)glfwGetProcAddress);
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+        GS_ERROR("gladLoadGLLoader failed");
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return -1;
+    }
 
     // --- 3. 初始化 ImGui ---
     ImGui::CreateContext();

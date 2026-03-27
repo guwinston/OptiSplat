@@ -104,7 +104,9 @@ list(APPEND GS_INCLUDES $<TARGET_PROPERTY:gaussian_splatting,INTERFACE_INCLUDE_D
 add_library(optisplat STATIC
     src/camera.cc
 	src/render.cc
+	src/load.cc
 	src/utils.cc
+	src/common.cu
 	${GS_OBJECTS}
 )
 

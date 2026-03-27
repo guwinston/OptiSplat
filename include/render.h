@@ -1,9 +1,9 @@
 #pragma once
 
 #include "camera.h"
+#include "common.h"
 #include "cuda.h"
 #include "cuda_runtime.h"
-#include <Eigen/Dense>
 #include <Eigen/Geometry>
 
 #include <math.h>
@@ -56,30 +56,7 @@ class SceneData;
 template<int D>
 struct RichPoint;
 
-using Pos = Eigen::Vector3f;
-using Rot = Eigen::Vector4f;
-using Scale = Eigen::Vector3f;
-template <int D>
-using SHs = std::array<float, (D + 1) * (D + 1) * 3>;
-
-inline uint64_t expandBits(uint32_t v) {
-    // 将21位整数的每个位插入到64位整数的低、中、高三位，实现三维莫顿编码
-    uint64_t x = v & 0x1fffff; // 只取低21位
-    x = (x | (x << 32)) & 0x1f00000000ffff;
-    x = (x | (x << 16)) & 0x1f0000ff0000ff;
-    x = (x | (x << 8))  & 0x100f00f00f00f00f;
-    x = (x | (x << 4))  & 0x10c30c30c30c30c3;
-    x = (x | (x << 2))  & 0x1249249249249249;
-    return x;
-}
-
-inline uint64_t mortonEncode64(float x, float y, float z) {
-    // 莫顿编码：假设输入归一化到[0,1)，并映射到[0, 2^21-1]
-    uint32_t xx = static_cast<uint32_t>(x * 2097152.0f); // 2^21
-    uint32_t yy = static_cast<uint32_t>(y * 2097152.0f);
-    uint32_t zz = static_cast<uint32_t>(z * 2097152.0f);
-    return (expandBits(xx) << 2) | (expandBits(yy) << 1) | (expandBits(zz));
-}
+// Pos, Rot, Scale, SHs, sigmoid, mortonEncode64 -- see common.h
 
 template<typename T>
 void safeCudaFree(T*& ptr, cudaStream_t stream = 0) {
@@ -107,15 +84,7 @@ T* cudaMallocAndMemcpy(const T* hPtr, size_t nElem, cudaStream_t stream = 0) {
     return dPtr;
 }
 
-inline float sigmoid(const float m1)
-{
-	return 1.0f / (1.0f + exp(-m1));
-}
-
-inline float inverse_sigmoid(const float m1)
-{
-	return log(m1 / (1.0f - m1));
-}
+// sigmoid / inverse_sigmoid -- see common.h
 
 void readPlyHeader(std::string filename, int& numVertex, int& shsDegree);
 
@@ -190,26 +159,7 @@ template <int D>
 class SceneData {
 public:
 
-    void initResource(std::string modelPath,  std::string cacheSavePath, bool rebuildBinaryCache);
-    
-    int loadPlyFlexible(
-        std::string filename, 
-        std::vector<Pos>& pos, 
-        std::vector<SHs<D>>& shs, 
-        std::vector<float>& opacity,
-        std::vector<Scale>& scale,
-        std::vector<Rot>& rot,
-        Eigen::Vector3f& minn,
-    	Eigen::Vector3f& maxx,
-	    Eigen::Vector3f& mean,
-        bool mortonOrder = false
-    );
-
-    void loadCache(std::string cacheDir);
-
-    void saveCache(std::string cacheDir);
-
-    bool isCacheExist(std::string cacheDir);
+    void initResource(std::string modelPath, std::string cacheSavePath, bool rebuildBinaryCache);
 
     void uploadDataToGPU();
 
@@ -232,7 +182,7 @@ public:
 
     Eigen::Vector3f sceneMin = {FLT_MAX, FLT_MAX, FLT_MAX};
     Eigen::Vector3f sceneMax = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
-    std::string cacheName = "gaussian_splatting.cache";
+    std::string cacheName = "gaussian_splatting.sog";
 
     int numPoints = 0;
     float*  cudaGaussianPoints = nullptr;
