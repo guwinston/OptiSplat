@@ -37,7 +37,7 @@ void preprocess(int P, int D, int M,
 	float focal_x, float focal_y, float zFar, float zNear, float tan_fovx, float tan_fovy, bool is_ortho, bool is_fisheye, float k1, float k2, float k3, float k4,
 	float2* points_xy, float4* rgb_depth, float4* conic_opacity,
 	uint64_t* gaussian_keys_unsorted, uint32_t* gaussian_values_unsorted,
-	int* curr_offset, cudaStream_t stream = 0
+	int* curr_offset, int max_num_rendered, int* overflowed, cudaStream_t stream = 0
 );
 
 void sort_gaussian(int num_rendered,

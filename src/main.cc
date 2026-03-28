@@ -13,7 +13,8 @@ using namespace optisplat;
 
 
 int main(int argc, char** argv) {
-    float m0 = Utils::nowGPUMB();
+    const MemoryFootprint startFootprint = Utils::sampleMemoryFootprint();
+    Utils::logMemoryFootprint("Main start", startFootprint);
 
     bool debug = false;
     bool testPerformance = true;
@@ -25,14 +26,19 @@ int main(int argc, char** argv) {
     config.bUseFlashGSExactIntersection = true;
     config.bUseFlashGSPrefetchingPipeline = false;
     config.bUseTensorCore = true;
-    config.maxNumRenderedGaussians = 200000000; // 预分配中间显存，设为-1表示不开启，是bUseFlashGSExactIntersection=True生效的必要条件
+    config.maxNumRenderedGaussians = -1; // 预分配中间显存，设为-1表示动态分配
 
     std::vector<GsCamera> cameras = Utils::readCamerasFromJson(config.cameraPath);
     std::shared_ptr<IGaussianRender> renderer = IGaussianRender::CreateRenderer(config);
+    int exitCode = 0;
     if (bRunViewer) {
         int maxWindowWidth = 1920;
         int maxWindowHeight = 1080;
-        return runViewer(renderer, cameras, maxWindowWidth, maxWindowHeight, -1, debug);
+        exitCode = runViewer(renderer, cameras, maxWindowWidth, maxWindowHeight, -1, debug);
+        const MemoryFootprint endFootprint = Utils::sampleMemoryFootprint();
+        Utils::logMemoryFootprint("Main end", endFootprint);
+        Utils::logMemoryFootprintDelta("Main runtime", startFootprint, endFootprint);
+        return exitCode;
     }
 
     ProgressBar progress(cameras.size(), "Rendering");
@@ -64,9 +70,11 @@ int main(int argc, char** argv) {
     Utils::saveCudaArrayToBin((projectDir / "output/output.bin").string() , outImage, camera.height * camera.width * 4);
     std::cout << "Average time: " << time / cameras.size() << " ms" << std::endl;
     std::cout << "Average FPS:  " << 1000 / (time / cameras.size()) << std::endl;
-    std::cout << "Memory usage: " << Utils::nowGPUMB() - m0 << " MB" << std::endl;
+    const MemoryFootprint endFootprint = Utils::sampleMemoryFootprint();
+    Utils::logMemoryFootprint("Main end", endFootprint);
+    Utils::logMemoryFootprintDelta("Main runtime", startFootprint, endFootprint);
     
-    return 0;
+    return exitCode;
 }
 
 

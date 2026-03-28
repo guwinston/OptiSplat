@@ -307,6 +307,8 @@ __global__ void preprocessCUDA(
 	float4* __restrict__ rgb_depth,
 	float4* __restrict__ conic_opacity,
 	int* __restrict__ curr_offset,
+	int max_num_rendered,
+	int* __restrict__ overflowed,
 	uint64_t* __restrict__ gaussian_keys_unsorted,
 	uint32_t* __restrict__ gaussian_values_unsorted,
 	const dim3 grid)
@@ -404,8 +406,15 @@ __global__ void preprocessCUDA(
 			key <<= 32;
 			key |= __float_as_uint(p_view.z);
 			int offset = atomicAdd(curr_offset, 1);
-			gaussian_keys_unsorted[offset] = key;
-			gaussian_values_unsorted[offset] = idx_vec;
+			if (offset < max_num_rendered && gaussian_keys_unsorted != nullptr && gaussian_values_unsorted != nullptr)
+			{
+				gaussian_keys_unsorted[offset] = key;
+				gaussian_values_unsorted[offset] = idx_vec;
+			}
+			else if (overflowed != nullptr)
+			{
+				atomicExch(overflowed, 1);
+			}
 		}
 		point_valid = false;
 	}
@@ -476,10 +485,15 @@ __global__ void preprocessCUDA(
 				key <<= 32;
 				key |= __float_as_uint(my_depth);
 				my_offset = __shfl_sync(~0, my_offset, 0);
-				if (valid)
+				if (valid && my_offset + __popc(mask) <= max_num_rendered &&
+					gaussian_keys_unsorted != nullptr && gaussian_values_unsorted != nullptr)
 				{
 					gaussian_keys_unsorted[my_offset + count] = key;
 					gaussian_values_unsorted[my_offset + count] = idx;
+				}
+				else if (valid && overflowed != nullptr)
+				{
+					atomicExch(overflowed, 1);
 				}
 			}
 		}
@@ -504,7 +518,7 @@ void preprocess(int P, int D, int M,
 	float focal_x, float focal_y, float zFar, float zNear, float tan_fovx, float tan_fovy, bool is_ortho, bool is_fisheye, float k1, float k2, float k3, float k4,
 	float2* points_xy, float4* rgb_depth, float4* conic_opacity,
 	uint64_t* gaussian_keys_unsorted, uint32_t* gaussian_values_unsorted,
-	int* curr_offset, cudaStream_t stream
+	int* curr_offset, int max_num_rendered, int* overflowed, cudaStream_t stream
 )
 {
 	dim3 grid((width + block_x - 1) / block_x, (height + block_y - 1) / block_y, 1);
@@ -548,6 +562,8 @@ void preprocess(int P, int D, int M,
 		rgb_depth,
 		conic_opacity,
 		curr_offset,
+		max_num_rendered,
+		overflowed,
 		gaussian_keys_unsorted,
 		gaussian_values_unsorted,
 		grid);

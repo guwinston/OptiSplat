@@ -11,9 +11,283 @@
 #include <map>
 #include <unordered_map>
 #include <filesystem>
+#include <cstdlib>
+#include <fstream>
+#include <sstream>
+
+#if defined(__linux__)
+#include <unistd.h>
+#elif defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <psapi.h>
+#endif
 
 
 namespace optisplat {
+namespace {
+
+bool readSystemCpuTicks(uint64_t& totalTicks, uint64_t& idleTicks) {
+#if defined(__linux__)
+    std::ifstream statFile("/proc/stat");
+    if (!statFile.is_open()) return false;
+
+    std::string cpuLabel;
+    uint64_t user = 0, nice = 0, system = 0, idle = 0, iowait = 0;
+    uint64_t irq = 0, softirq = 0, steal = 0, guest = 0, guestNice = 0;
+    statFile >> cpuLabel >> user >> nice >> system >> idle >> iowait
+             >> irq >> softirq >> steal >> guest >> guestNice;
+    if (cpuLabel != "cpu") return false;
+
+    idleTicks = idle + iowait;
+    totalTicks = user + nice + system + idle + iowait + irq + softirq + steal + guest + guestNice;
+    return true;
+#elif defined(_WIN32)
+    FILETIME idleTime;
+    FILETIME kernelTime;
+    FILETIME userTime;
+    if (!GetSystemTimes(&idleTime, &kernelTime, &userTime)) return false;
+
+    ULARGE_INTEGER idleValue, kernelValue, userValue;
+    idleValue.LowPart = idleTime.dwLowDateTime;
+    idleValue.HighPart = idleTime.dwHighDateTime;
+    kernelValue.LowPart = kernelTime.dwLowDateTime;
+    kernelValue.HighPart = kernelTime.dwHighDateTime;
+    userValue.LowPart = userTime.dwLowDateTime;
+    userValue.HighPart = userTime.dwHighDateTime;
+
+    idleTicks = idleValue.QuadPart;
+    totalTicks = kernelValue.QuadPart + userValue.QuadPart;
+    return true;
+#else
+    (void)totalTicks;
+    (void)idleTicks;
+    return false;
+#endif
+}
+
+bool readProcessCpuTicks(uint64_t& processTicks) {
+#if defined(__linux__)
+    std::ifstream statFile("/proc/self/stat");
+    if (!statFile.is_open()) return false;
+
+    std::string line;
+    std::getline(statFile, line);
+    if (line.empty()) return false;
+
+    const size_t rparen = line.rfind(')');
+    if (rparen == std::string::npos || rparen + 2 >= line.size()) return false;
+
+    std::istringstream iss(line.substr(rparen + 2));
+    std::string token;
+    uint64_t utime = 0;
+    uint64_t stime = 0;
+    for (int field = 3; iss >> token; ++field) {
+        if (field == 14) utime = std::stoull(token);
+        else if (field == 15) {
+            stime = std::stoull(token);
+            break;
+        }
+    }
+
+    processTicks = utime + stime;
+    return true;
+#elif defined(_WIN32)
+    FILETIME creationTime;
+    FILETIME exitTime;
+    FILETIME kernelTime;
+    FILETIME userTime;
+    if (!GetProcessTimes(GetCurrentProcess(), &creationTime, &exitTime, &kernelTime, &userTime)) return false;
+
+    ULARGE_INTEGER kernelValue, userValue;
+    kernelValue.LowPart = kernelTime.dwLowDateTime;
+    kernelValue.HighPart = kernelTime.dwHighDateTime;
+    userValue.LowPart = userTime.dwLowDateTime;
+    userValue.HighPart = userTime.dwHighDateTime;
+
+    processTicks = kernelValue.QuadPart + userValue.QuadPart;
+    return true;
+#else
+    (void)processTicks;
+    return false;
+#endif
+}
+
+uint32_t getProcessorCount() {
+#if defined(_WIN32)
+    SYSTEM_INFO sysInfo;
+    GetSystemInfo(&sysInfo);
+    return std::max<DWORD>(1, sysInfo.dwNumberOfProcessors);
+#else
+    return 1;
+#endif
+}
+
+} // namespace
+
+bool Utils::readGpuMemoryMB(float& gpuUsedMB, float& gpuTotalMB) {
+    size_t freeMem = 0;
+    size_t totalMem = 0;
+    const cudaError_t err = cudaMemGetInfo(&freeMem, &totalMem);
+    if (err != cudaSuccess || totalMem == 0) {
+        cudaGetLastError();
+        return false;
+    }
+
+    const size_t usedMem = totalMem - freeMem;
+    gpuUsedMB = static_cast<float>(usedMem) / (1024.0f * 1024.0f);
+    gpuTotalMB = static_cast<float>(totalMem) / (1024.0f * 1024.0f);
+    return true;
+}
+
+bool Utils::readProcessMemoryMB(float& processMemoryMB) {
+#if defined(__linux__)
+    std::ifstream statmFile("/proc/self/statm");
+    if (!statmFile.is_open()) return false;
+
+    long totalPages = 0;
+    long residentPages = 0;
+    statmFile >> totalPages >> residentPages;
+    if (residentPages <= 0) return false;
+
+    const long pageSize = sysconf(_SC_PAGESIZE);
+    if (pageSize <= 0) return false;
+
+    processMemoryMB = static_cast<float>(residentPages) * static_cast<float>(pageSize) /
+                      (1024.0f * 1024.0f);
+    return true;
+#elif defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS memCounters;
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), &memCounters, sizeof(memCounters))) return false;
+
+    processMemoryMB = static_cast<float>(memCounters.WorkingSetSize) / (1024.0f * 1024.0f);
+    return true;
+#else
+    (void)processMemoryMB;
+    return false;
+#endif
+}
+
+MemoryFootprint Utils::sampleMemoryFootprint() {
+    MemoryFootprint footprint;
+    footprint.processMemoryAvailable = readProcessMemoryMB(footprint.processMemoryMB);
+    footprint.gpuAvailable = readGpuMemoryMB(footprint.gpuUsedMB, footprint.gpuTotalMB);
+    return footprint;
+}
+
+void Utils::logMemoryFootprint(const std::string& label, const MemoryFootprint& footprint) {
+    if (footprint.processMemoryAvailable) {
+        GS_INFO("%s process memory: %.1f MB", label.c_str(), footprint.processMemoryMB);
+    } else {
+        GS_INFO("%s process memory: unavailable", label.c_str());
+    }
+
+    if (footprint.gpuAvailable) {
+        GS_INFO("%s GPU memory: %.1f / %.1f MB", label.c_str(), footprint.gpuUsedMB, footprint.gpuTotalMB);
+    } else {
+        GS_INFO("%s GPU memory: unavailable", label.c_str());
+    }
+}
+
+void Utils::logMemoryFootprintDelta(const std::string& label, const MemoryFootprint& start, const MemoryFootprint& end) {
+    if (start.processMemoryAvailable && end.processMemoryAvailable) {
+        GS_INFO("%s process memory delta: start=%.1f MB end=%.1f MB delta=%+.1f MB",
+                label.c_str(), start.processMemoryMB, end.processMemoryMB,
+                end.processMemoryMB - start.processMemoryMB);
+    } else {
+        GS_INFO("%s process memory delta: unavailable", label.c_str());
+    }
+
+    if (start.gpuAvailable && end.gpuAvailable) {
+        GS_INFO("%s GPU memory delta: start=%.1f MB end=%.1f MB delta=%+.1f MB (total %.1f MB)",
+                label.c_str(), start.gpuUsedMB, end.gpuUsedMB,
+                end.gpuUsedMB - start.gpuUsedMB, end.gpuTotalMB);
+    } else {
+        GS_INFO("%s GPU memory delta: unavailable", label.c_str());
+    }
+}
+
+ResourceUsageSampler::ResourceUsageSampler() {
+    lastNumProcessors_ = getProcessorCount();
+    const bool haveSystem = readSystemCpuTicks(lastSystemTotalTicks_, lastSystemIdleTicks_);
+    const bool haveProcess = readProcessCpuTicks(lastProcessTicks_);
+    lastWallTime_ = std::chrono::steady_clock::now();
+    cpuAvailable_ = haveSystem && haveProcess;
+    updateGpuStats();
+}
+
+const ResourceUsageStats& ResourceUsageSampler::update() {
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed = std::chrono::duration<float>(now - lastUpdateTime_).count();
+    if (elapsed < 0.5f) return stats_;
+
+    lastUpdateTime_ = now;
+    updateCpuStats();
+    updateGpuStats();
+    return stats_;
+}
+
+void ResourceUsageSampler::updateCpuStats() {
+    if (!cpuAvailable_) {
+        stats_.cpuAvailable = false;
+        return;
+    }
+
+    uint64_t currentTotalTicks = 0;
+    uint64_t currentIdleTicks = 0;
+    uint64_t currentProcessTicks = 0;
+    if (!readSystemCpuTicks(currentTotalTicks, currentIdleTicks) ||
+        !readProcessCpuTicks(currentProcessTicks)) {
+        stats_.cpuAvailable = false;
+        cpuAvailable_ = false;
+        return;
+    }
+
+    const uint64_t totalDelta = currentTotalTicks - lastSystemTotalTicks_;
+    const uint64_t idleDelta = currentIdleTicks - lastSystemIdleTicks_;
+    const uint64_t processDelta = currentProcessTicks - lastProcessTicks_;
+
+    if (totalDelta > 0) {
+        stats_.systemCpuPercent = 100.0f * (1.0f - static_cast<float>(idleDelta) /
+            static_cast<float>(totalDelta));
+
+#if defined(__linux__)
+        const auto now = std::chrono::steady_clock::now();
+        const float wallSeconds = std::chrono::duration<float>(now - lastWallTime_).count();
+        const long ticksPerSecond = sysconf(_SC_CLK_TCK);
+        if (wallSeconds > 0.0f && ticksPerSecond > 0) {
+            stats_.processCpuPercent = 100.0f *
+                (static_cast<float>(processDelta) / static_cast<float>(ticksPerSecond)) / wallSeconds;
+        }
+        lastWallTime_ = now;
+#elif defined(_WIN32)
+        stats_.processCpuPercent = 100.0f *
+            (static_cast<float>(processDelta) / static_cast<float>(totalDelta)) *
+            static_cast<float>(lastNumProcessors_);
+#else
+        stats_.processCpuPercent = 0.0f;
+#endif
+    }
+
+    stats_.processMemoryAvailable = Utils::readProcessMemoryMB(stats_.processMemoryMB);
+    stats_.cpuAvailable = true;
+    lastSystemTotalTicks_ = currentTotalTicks;
+    lastSystemIdleTicks_ = currentIdleTicks;
+    lastProcessTicks_ = currentProcessTicks;
+}
+
+void ResourceUsageSampler::updateGpuStats() {
+    if (!Utils::readGpuMemoryMB(stats_.gpuUsedMB, stats_.gpuTotalMB)) {
+        stats_.gpuAvailable = false;
+        return;
+    }
+
+    stats_.gpuUsedPercent = 100.0f * stats_.gpuUsedMB / stats_.gpuTotalMB;
+    stats_.gpuAvailable = true;
+}
+
 std::vector<GsCamera> Utils::readCamerasFromJson(std::string filePath) {
     std::ifstream file(filePath);
     if (!file.is_open()) {

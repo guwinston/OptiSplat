@@ -13,6 +13,7 @@
 #include <iostream>
 #include <fstream>
 #include <algorithm>
+#include <climits>
 #include <numeric>
 #include <cuda.h>
 #include "cuda_runtime.h"
@@ -247,14 +248,19 @@ void CudaRasterizer::Rasterizer::markVisible(
 		present);
 }
 
-CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& chunk, size_t P)
+CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(
+	char*& chunk, size_t P, bool needsCov3DScratch)
 {
 	GeometryState geom;
 	// obtain(chunk, geom.depths, P, 128);
 	obtain(chunk, geom.clamped, P * 3, 128);
 	obtain(chunk, geom.internal_radii, P, 128);
 	obtain(chunk, geom.means2D, P, 128);
-	obtain(chunk, geom.cov3D, P * 6, 128);
+	if (needsCov3DScratch) {
+		obtain(chunk, geom.cov3D, P * 6, 128);
+	} else {
+		geom.cov3D = nullptr;
+	}
 	obtain(chunk, geom.conic_opacity, P, 128);
 	obtain(chunk, geom.rgb_depth, P, 128);
 	// obtain(chunk, geom.rgb, P * 3, 128);
@@ -289,6 +295,18 @@ CudaRasterizer::BinningState CudaRasterizer::BinningState::fromChunk(char*& chun
 	return binning;
 }
 
+namespace {
+
+int growExactIntersectionCapacity(int currentCapacity, int requiredCount)
+{
+	const int minCapacity = 1 << 20;
+	const int growthFromCurrent = currentCapacity > 0 ? currentCapacity + currentCapacity / 2 : 0;
+	const int growthFromRequired = requiredCount + std::max(requiredCount / 4, minCapacity);
+	return std::max(std::max(requiredCount, minCapacity), std::max(growthFromCurrent, growthFromRequired));
+}
+
+}
+
 
 // Forward rendering procedure for differentiable rasterization
 // of Gaussians.
@@ -296,9 +314,9 @@ int CudaRasterizer::Rasterizer::forward(
 	std::function<char* (size_t)> geometryBuffer,
 	std::function<char* (size_t)> binningBuffer,
 	std::function<char* (size_t)> imageBuffer,
-	const int P, int D, int M, int maxNumRendered,
+	const int P, int D, int M, int frameCapacity, int capacityLimit,
 	bool useExactIntersection, bool usePrefetchingPipeline, bool useTensorCore,
-	const std::vector<float>& cpuCamPos, const std::vector<float>& cpuCamRot, float znear, float zfar, int* currOffset,
+	const std::vector<float>& cpuCamPos, const std::vector<float>& cpuCamRot, float znear, float zfar, int* currOffset, int* overflowFlag,
 	bool isOrtho, bool isFisheye, float k1, float k2, float k3, float k4, 
 	const std::vector<float>& cpuBackground,
 	const int width, int height,
@@ -315,6 +333,7 @@ int CudaRasterizer::Rasterizer::forward(
 	float* out_color,
 	float* depth,
 	bool antialiasing,
+	int* resolvedCapacity,
 	int* radii,
 	bool debug)
 {
@@ -343,9 +362,12 @@ int CudaRasterizer::Rasterizer::forward(
 	const glm::mat4 viewmatrixGlm = getViewMatrix(cpuCamPosGlm, cpuCamRotGlm);
 	const glm::mat4 projmatrixGlm = getProjectionMatrix(width, height, cpuCamPosGlm, cpuCamRotGlm, focal_x, focal_y, zfar, znear, isOrtho);
 
-	size_t chunk_size = required<GeometryState>(P);
+	const bool needsCov3DScratch = (cov3D_precomp == nullptr);
+	char* geom_size = nullptr;
+	GeometryState::fromChunk(geom_size, P, needsCov3DScratch);
+	size_t chunk_size = reinterpret_cast<size_t>(geom_size) + 128;
 	char* chunkptr = geometryBuffer(chunk_size);
-	GeometryState geomState = GeometryState::fromChunk(chunkptr, P);
+	GeometryState geomState = GeometryState::fromChunk(chunkptr, P, needsCov3DScratch);
 
 	if (radii == nullptr)
 	{
@@ -365,46 +387,92 @@ int CudaRasterizer::Rasterizer::forward(
 		throw std::runtime_error("For non-RGB, provide precomputed Gaussian colors!");
 	}
 
-	// if maxNumRendered is set, we preallocate binning buffers.
 	BinningState binningState;
-	if (maxNumRendered > 0) {
-		size_t binning_chunk_size = required<BinningState>(maxNumRendered);
+	if (!useExactIntersection && frameCapacity > 0) {
+		size_t binning_chunk_size = required<BinningState>(frameCapacity);
 		char* binning_chunkptr = binningBuffer(binning_chunk_size);
-		binningState = BinningState::fromChunk(binning_chunkptr, maxNumRendered);
+		binningState = BinningState::fromChunk(binning_chunkptr, frameCapacity);
 	}
 
 #ifdef DEBUG
 	saveCudaArrayToFile(means3D, P * 3, "./output/means3d.bin");
 	saveCudaArrayToFile(shs, P * D * M, "./output/shs.bin");
 	saveCudaArrayToFile(opacities, P, "./output/opacities.bin");
-	saveCudaArrayToFile(scales, P * 3, "./output/scales.bin");
-	saveCudaArrayToFile(rotations, P * 4, "./output/rotations.bin");
-	saveCudaArrayToFile(cov3D_precomp, P * 6, "./output/cov3d_precomp.bin");
+	if (scales) saveCudaArrayToFile(scales, P * 3, "./output/scales.bin");
+	if (rotations) saveCudaArrayToFile(rotations, P * 4, "./output/rotations.bin");
+	if (cov3D_precomp) saveCudaArrayToFile(cov3D_precomp, P * 6, "./output/cov3d_precomp.bin");
 	saveCudaArrayToFile(viewmatrix, 16, "./output/viewmatrix.bin");
 	saveCudaArrayToFile(projmatrix, 16, "./output/projmatrix.bin");
 	saveCudaArrayToFile(cam_pos, 3, "./output/cam_pos.bin");
 #endif
 
 	int num_rendered = 0;
-	if (useExactIntersection && maxNumRendered > 0) {
-		cudaMemset(currOffset, 0, sizeof(int)); // 只有设为 0 是安全的，因为cudaMemset是按照一个字节一个字节设置，而int4个字节
-		CHECK_CUDA(flashgs::preprocess(
-			P, D, M,
-			(glm::vec3*)means3D, (glm::vec3*)shs, opacities, (flashgs::cov3d_t*)cov3D_precomp,
-			width, height, BLOCK_X, BLOCK_Y,
-			cpuCamPosGlm, cpuCamRotGlm, viewmatrixGlm, projmatrixGlm,
-			focal_x, focal_y, zfar, znear, tan_fovx, tan_fovy, isOrtho, isFisheye, k1, k2, k3, k4,
-			(float2*)geomState.means2D, (float4*)geomState.rgb_depth, (float4*)geomState.conic_opacity,
-			(uint64_t*)binningState.point_list_keys_unsorted, (uint32_t*)binningState.point_list_unsorted,
-			currOffset
-		), debug);
-		CHECK_CUDA(cudaMemcpy(&num_rendered, currOffset, sizeof(int), cudaMemcpyDeviceToHost), debug);
-		cudaDeviceSynchronize();
-		if (maxNumRendered > 0 && num_rendered > maxNumRendered || num_rendered <= 0) {
-			std::cerr << "Error: num_rendered (" << num_rendered << ") exceeds maxNumRendered (" << maxNumRendered << "). Please increase maxNumRendered." << std::endl;
-			return -1;
+	if (useExactIntersection) {
+		int capacity = std::max(0, frameCapacity);
+		const int effectiveCapacityLimit = capacityLimit > 0 ? capacityLimit : INT_MAX;
+		bool needsRetry = false;
+		int retryCount = 0;
+		do {
+			needsRetry = false;
+			if (capacity > 0) {
+				size_t binning_chunk_size = required<BinningState>(capacity);
+				char* binning_chunkptr = binningBuffer(binning_chunk_size);
+				binningState = BinningState::fromChunk(binning_chunkptr, capacity);
+			}
+
+			CHECK_CUDA(cudaMemset(currOffset, 0, sizeof(int)), debug);
+			if (overflowFlag != nullptr) {
+				CHECK_CUDA(cudaMemset(overflowFlag, 0, sizeof(int)), debug);
+			}
+
+			CHECK_CUDA(flashgs::preprocess(
+				P, D, M,
+				(glm::vec3*)means3D, (glm::vec3*)shs, opacities, (flashgs::cov3d_t*)cov3D_precomp,
+				width, height, BLOCK_X, BLOCK_Y,
+				cpuCamPosGlm, cpuCamRotGlm, viewmatrixGlm, projmatrixGlm,
+				focal_x, focal_y, zfar, znear, tan_fovx, tan_fovy, isOrtho, isFisheye, k1, k2, k3, k4,
+				(float2*)geomState.means2D, (float4*)geomState.rgb_depth, (float4*)geomState.conic_opacity,
+				capacity > 0 ? (uint64_t*)binningState.point_list_keys_unsorted : nullptr,
+				capacity > 0 ? (uint32_t*)binningState.point_list_unsorted : nullptr,
+				currOffset,
+				capacity,
+				overflowFlag
+			), debug);
+
+			int overflowed = 0;
+			CHECK_CUDA(cudaMemcpy(&num_rendered, currOffset, sizeof(int), cudaMemcpyDeviceToHost), debug);
+			if (overflowFlag != nullptr) {
+				CHECK_CUDA(cudaMemcpy(&overflowed, overflowFlag, sizeof(int), cudaMemcpyDeviceToHost), debug);
+			}
+			cudaDeviceSynchronize();
+
+			if (num_rendered <= 0) {
+				break;
+			}
+
+			if (capacity == 0 || overflowed != 0 || num_rendered > capacity) {
+				const int nextCapacity = std::min(growExactIntersectionCapacity(capacity, num_rendered), effectiveCapacityLimit);
+				if (nextCapacity <= capacity) {
+					std::cerr << "Error: exact-intersection buffer reached capacity limit "
+							  << effectiveCapacityLimit << " with num_rendered=" << num_rendered
+							  << ". Increase maxNumRenderedGaussians if you want a higher ceiling." << std::endl;
+					return -1;
+				}
+				capacity = nextCapacity;
+				needsRetry = true;
+				++retryCount;
+			}
+		} while (needsRetry && retryCount < 8);
+
+			if (needsRetry) {
+				std::cerr << "Error: exact-intersection buffer did not converge after retries. Last num_rendered="
+						  << num_rendered << " capacity=" << capacity << std::endl;
+				return -1;
+			}
+			if (resolvedCapacity != nullptr) {
+				*resolvedCapacity = capacity;
+			}
 		}
-	}
 	else {
 		// Run preprocessing per-Gaussian (transformation, bounding, conversion of SHs to RGB)
 		CHECK_CUDA(FORWARD::preprocess(
@@ -441,16 +509,19 @@ int CudaRasterizer::Rasterizer::forward(
 
 		// Retrieve total number of Gaussian instances to launch and resize aux buffers
 		CHECK_CUDA(cudaMemcpy(&num_rendered, geomState.point_offsets + P - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
-		if (maxNumRendered > 0 && num_rendered > maxNumRendered || num_rendered <= 0) {
-			std::cerr << "Error: num_rendered (" << num_rendered << ") exceeds maxNumRendered (" << maxNumRendered << "). Please increase maxNumRendered." << std::endl;
+		if ((frameCapacity > 0 && num_rendered > frameCapacity) || num_rendered < 0) {
+			std::cerr << "Error: num_rendered (" << num_rendered << ") exceeds frameCapacity (" << frameCapacity << "). Please increase maxNumRenderedGaussians." << std::endl;
 			return -1;
 		}
 
-		if (maxNumRendered < 0) {
-			// std::cout << "Warning: maxNumRendered is negative, ignoring limit on number of rendered Gaussians." << std::endl;
+		if (frameCapacity < 0) {
+			// std::cout << "Warning: frameCapacity is negative, using num_rendered for allocation." << std::endl;
 			size_t binning_chunk_size = required<BinningState>(num_rendered);
 			char* binning_chunkptr = binningBuffer(binning_chunk_size);
 			binningState = BinningState::fromChunk(binning_chunkptr, num_rendered);
+		}
+		if (resolvedCapacity != nullptr) {
+			*resolvedCapacity = frameCapacity > 0 ? frameCapacity : num_rendered;
 		}
 
 
@@ -571,4 +642,3 @@ int CudaRasterizer::Rasterizer::forward(
 
 	return num_rendered;
 }
-

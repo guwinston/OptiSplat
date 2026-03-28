@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <climits>
 #include <limits>
 
 
@@ -32,15 +33,34 @@ std::function<char* (size_t N)> resizeFunctional(void** ptr, size_t& S, bool deb
 		if (N > S)
 		{	
 			if (*ptr) CHECK_CUDA(cudaFree(*ptr), debug);
-			size_t scale = (S == 0) ? 1 : 2; // s = 0 means the first allocation
-			// std::cout << "Resize: " << N << " -> " << scale * N << std::endl;
-			CHECK_CUDA(cudaMalloc(ptr, scale * N), debug);
-			CHECK_CUDA(cudaMemset(reinterpret_cast<char*>(*ptr), 0, scale * N), debug);
-			S = scale * N;
+			const size_t kMaxSlackBytes = 256ull * 1024ull * 1024ull;
+			size_t newSize = N;
+			if (S > 0) {
+				const size_t extra = std::min(S, kMaxSlackBytes);
+				if (S <= SIZE_MAX - extra) {
+					newSize = std::max(N, S + extra);
+				}
+			}
+			CHECK_CUDA(cudaMalloc(ptr, newSize), debug);
+			CHECK_CUDA(cudaMemset(reinterpret_cast<char*>(*ptr), 0, newSize), debug);
+			S = newSize;
 		}
 		return reinterpret_cast<char*>(*ptr);
 	};
 	return lambda;
+}
+
+int clampRenderedCapacity(int64_t requested, int limit) {
+	if (requested <= 0) return 0;
+	int64_t capped = requested;
+	if (limit > 0) capped = std::min<int64_t>(capped, limit);
+	capped = std::min<int64_t>(capped, INT_MAX);
+	return static_cast<int>(capped);
+}
+
+int chooseInitialExactCapacity(int numPoints, int limit) {
+	const int64_t baseline = std::max<int64_t>(1 << 20, std::min<int64_t>(static_cast<int64_t>(numPoints) * 2, 16LL << 20));
+	return clampRenderedCapacity(baseline, limit);
 }
 
 void computeCov3D(const Eigen::Vector3f& scale, float mod, const Eigen::Vector4f& rot, float* cov3D)
@@ -146,6 +166,10 @@ GaussianRender<D>::GaussianRender(GsConfig config) {
 	}
 
 	sceneData.initResource(modelPath.string(), sogPath.string(), config.bRebuildBinaryCache);
+	capacityLimit = config.maxNumRenderedGaussians > 0 ? config.maxNumRenderedGaussians : -1;
+	allocatedRenderedCapacity = config.bUseFlashGSExactIntersection ?
+		chooseInitialExactCapacity(sceneData.numPoints, capacityLimit) :
+		config.maxNumRenderedGaussians;
 	
 	setDefaultCamera(90, 1920, 1080);
 	setCudaAuxiliary();
@@ -165,6 +189,7 @@ GaussianRender<D>::~GaussianRender() {
 	safeCudaFree(cudaCamPos);
 	safeCudaFree(cudaRadii);
 	safeCudaFree(cudaCurrOffset);
+	safeCudaFree(cudaExactOverflow);
 }
 
 template <int D>
@@ -182,6 +207,10 @@ float GaussianRender<D>::render(GsCamera& inCamera, float*& outImage, float*& ou
 	{
 		int P = sceneData.numPoints;
 		int M = (D + 1) * (D + 1);
+		const int frameCapacity = config.bUseFlashGSExactIntersection ? allocatedRenderedCapacity : config.maxNumRenderedGaussians;
+		int resolvedCapacity = frameCapacity;
+		const float* gaussianScale = sceneData.cudaGaussianCov3D ? nullptr : sceneData.cudaGaussianScale;
+		const float* gaussianRot   = sceneData.cudaGaussianCov3D ? nullptr : sceneData.cudaGaussianRot;
 		float tanHalfFovx = inCamera.width / (2.0f * inCamera.fx);
 		float tanHalfFovy = inCamera.height / (2.0f * inCamera.fy);
 		bool isOrtho = inCamera.model == CameraModel::ORTHOGRAPHIC;
@@ -199,29 +228,34 @@ float GaussianRender<D>::render(GsCamera& inCamera, float*& outImage, float*& ou
 			resizeFunctional(&cudaGeometryState, allocatedGeometryState),
 			resizeFunctional(&cudaBinningState, allocatedBinningState),
 			resizeFunctional(&cudaImageState, allocatedImageState),
-			P, D, M, config.maxNumRenderedGaussians,
+			P, D, M, frameCapacity, capacityLimit,
 			config.bUseFlashGSExactIntersection, config.bUseFlashGSPrefetchingPipeline, config.bUseTensorCore,
-			cpuCamPos, cpuCamRot, inCamera.znear, inCamera.zfar, cudaCurrOffset,
+			cpuCamPos, cpuCamRot, inCamera.znear, inCamera.zfar, cudaCurrOffset, cudaExactOverflow,
 			isOrtho, isFisheye, k1, k2, k3, k4,
-			cpuBackground,
-			inCamera.width, inCamera.height,
-			sceneData.cudaGaussianPoints,
-			sceneData.cudaGaussianSHs,
+				cpuBackground,
+				inCamera.width, inCamera.height,
+				sceneData.cudaGaussianPoints,
+				sceneData.cudaGaussianSHs,
 			nullptr,
 			sceneData.cudaGaussianOpacity,
-			sceneData.cudaGaussianScale,
+			gaussianScale,
 			inCamera.scale,
-			sceneData.cudaGaussianRot,
-			// nullptr,
+			gaussianRot,
 			sceneData.cudaGaussianCov3D,
-			tanHalfFovx, tanHalfFovy,
-			false,
-			cudaImage,
-			cudaAllMap,
-			false,
-			cudaRadii,
-			debug), debug
+				tanHalfFovx, tanHalfFovy,
+				false,
+				cudaImage,
+				cudaAllMap,
+				false,
+				&resolvedCapacity,
+				cudaRadii,
+				debug), debug
 		);
+		if (config.bUseFlashGSExactIntersection && resolvedCapacity > allocatedRenderedCapacity) {
+			GS_INFO("Exact-intersection capacity grow: %d -> %d (num_rendered=%d)",
+				allocatedRenderedCapacity, resolvedCapacity, numRendered);
+			allocatedRenderedCapacity = resolvedCapacity;
+		}
 	}
 
 	cudaDeviceSynchronize();
@@ -229,6 +263,16 @@ float GaussianRender<D>::render(GsCamera& inCamera, float*& outImage, float*& ou
 	outAllMap = cudaAllMap;
 
 	return numRendered;
+}
+
+template <int D>
+RenderRuntimeStats GaussianRender<D>::getRuntimeStats() const {
+	RenderRuntimeStats stats;
+	stats.numPoints = sceneData.numPoints;
+	stats.allocatedRenderedGaussians = config.bUseFlashGSExactIntersection ? allocatedRenderedCapacity : config.maxNumRenderedGaussians;
+	stats.allocatedRenderedGaussiansLimit = capacityLimit;
+	stats.useExactIntersection = config.bUseFlashGSExactIntersection;
+	return stats;
 }
 
 
@@ -320,6 +364,7 @@ void GaussianRender<D>::setCudaAuxiliary() {
 	int numPoints = sceneData.numPoints;
 	cudaMallocAsync((void**)&cudaRadii, sizeof(int) * numPoints, stream);
 	cudaMallocAsync((void**)&cudaCurrOffset, sizeof(int), stream);
+	cudaMallocAsync((void**)&cudaExactOverflow, sizeof(int), stream);
 	cudaStreamSynchronize(stream);
 }
 
@@ -377,11 +422,16 @@ void SceneData<D>::uploadDataToGPU() {
 	cudaGaussianRot = (float*)cudaMallocAndMemcpy((Rot*)gaussianRot.data(), numPoints, stream);
 
 	// Precompute cov3D on the GPU (runs once at init, never again per frame).
-	// Allocate output first, then launch the kernel in-place -- no CPU round-trip needed.
+	// Allocate output first, then launch the kernel in-place. After that we can
+	// release scale/rot on the GPU because the renderer only needs cov3D.
 	cudaMallocAsync(&cudaGaussianCov3D, (size_t)numPoints * 6 * sizeof(float), stream);
 	// Synchronize to ensure Scale/Rot transfers are complete before the kernel starts.
 	cudaStreamSynchronize(stream);
 	launchComputeCov3D(cudaGaussianScale, cudaGaussianRot, cudaGaussianCov3D, 1.0f, numPoints, stream);
+	cudaStreamSynchronize(stream);
+
+	safeCudaFree(cudaGaussianScale, stream);
+	safeCudaFree(cudaGaussianRot, stream);
 }
 
 

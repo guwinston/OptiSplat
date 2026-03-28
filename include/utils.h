@@ -17,6 +17,46 @@
 
 namespace optisplat {
 
+struct ResourceUsageStats {
+    float processCpuPercent = 0.0f;
+    float systemCpuPercent = 0.0f;
+    float processMemoryMB = 0.0f;
+    float gpuUsedMB = 0.0f;
+    float gpuTotalMB = 0.0f;
+    float gpuUsedPercent = 0.0f;
+    bool cpuAvailable = false;
+    bool processMemoryAvailable = false;
+    bool gpuAvailable = false;
+};
+
+struct MemoryFootprint {
+    float processMemoryMB = 0.0f;
+    float gpuUsedMB = 0.0f;
+    float gpuTotalMB = 0.0f;
+    bool processMemoryAvailable = false;
+    bool gpuAvailable = false;
+};
+
+class ResourceUsageSampler {
+public:
+    ResourceUsageSampler();
+
+    const ResourceUsageStats& update();
+
+private:
+    void updateCpuStats();
+    void updateGpuStats();
+
+    ResourceUsageStats stats_{};
+    bool cpuAvailable_ = false;
+    uint64_t lastSystemTotalTicks_ = 0;
+    uint64_t lastSystemIdleTicks_ = 0;
+    uint64_t lastProcessTicks_ = 0;
+    uint32_t lastNumProcessors_ = 1;
+    std::chrono::steady_clock::time_point lastWallTime_{};
+    std::chrono::steady_clock::time_point lastUpdateTime_{};
+};
+
 class Utils {
 public:
     static int64_t nowUs() {
@@ -32,6 +72,16 @@ public:
         float usedMem = (float)(totalMem - freeMem) / (1024.0 * 1024.0);
         return usedMem;
     }
+
+    static bool readGpuMemoryMB(float& gpuUsedMB, float& gpuTotalMB);
+
+    static bool readProcessMemoryMB(float& processMemoryMB);
+
+    static MemoryFootprint sampleMemoryFootprint();
+
+    static void logMemoryFootprint(const std::string& label, const MemoryFootprint& footprint);
+
+    static void logMemoryFootprintDelta(const std::string& label, const MemoryFootprint& start, const MemoryFootprint& end);
 
     template<typename T>
     static bool saveCpuArrayToBin(const std::string& fileName, const T* data, size_t count) {

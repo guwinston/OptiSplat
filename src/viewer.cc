@@ -1,4 +1,5 @@
 #include "viewer.h"
+#include "utils.h"
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -102,6 +103,7 @@ void updateCameraPose(GsCamera& cam, GLFWwindow* window, float deltaTime,
 int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> cameras, int maxWidth, int maxHeight, int lockFPS, bool debug) {
     // --- 1. 初始化工作相机列表 (深拷贝以保护原始数据) ---
     GS_INFO("Launching Gaussian Splatting Viewer...");
+    const MemoryFootprint startFootprint = Utils::sampleMemoryFootprint();
     std::vector<GsCamera> workCameras;
     if (cameras.empty()) {
         workCameras.push_back(renderer->defaultCamera);
@@ -194,6 +196,7 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
     float avgTotalMs = 0.0f;  // 完整帧耗时（平滑值）
     float numRendered = 0.0f; // 渲染的高斯点数量
     bool camSwitchLocked = false;
+    ResourceUsageSampler usageSampler;
     GS_INFO("Launching Gaussian Splatting Viewer successful.");
 
     // --- 6. 主循环 ---
@@ -282,6 +285,19 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
         ImGui::SetNextWindowPos(ImVec2(width - 260.0f, 10.0f), ImGuiCond_FirstUseEver);
         ImGui::Begin("Renderer Statistics", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
         ImGui::Text("Rendered Gaussians: %.0f", numRendered);
+        const RenderRuntimeStats runtimeStats = renderer->getRuntimeStats();
+        if (runtimeStats.allocatedRenderedGaussians > 0) {
+            ImGui::Text("Allocated Capacity: %d", runtimeStats.allocatedRenderedGaussians);
+            if (numRendered > 0.0f) {
+                ImGui::BulletText("Capacity Usage: %.1f%%",
+                                  100.0f * numRendered / static_cast<float>(runtimeStats.allocatedRenderedGaussians));
+            }
+            if (runtimeStats.allocatedRenderedGaussiansLimit > 0) {
+                ImGui::BulletText("Capacity Limit: %d", runtimeStats.allocatedRenderedGaussiansLimit);
+            }
+        } else {
+            ImGui::Text("Allocated Capacity: dynamic");
+        }
         ImGui::Separator();
         
         // 显示纯渲染耗时与对应 FPS
@@ -294,11 +310,31 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
         // 显示包含拷贝在内的总帧耗时
         float currentTotalMs = deltaTime * 1000.0f;
         avgTotalMs = 0.95f * avgTotalMs + 0.05f * currentTotalMs;
+        const ResourceUsageStats& usageStats = usageSampler.update();
         ImGui::Text("Total Loop (Incl. Copy/UI):");
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.0f, 1.0f)); // 比如改成红色
         ImGui::BulletText("Real-time: %.2f ms (%.1f FPS)", currentTotalMs, 1000.0f / (currentTotalMs + 1e-6f));
         ImGui::PopStyleColor();
         ImGui::BulletText("Average:   %.2f ms (%.1f FPS)", avgTotalMs, 1000.0f / (avgTotalMs + 1e-6f));
+        ImGui::Separator();
+        ImGui::Text("Resource Usage:");
+        if (usageStats.cpuAvailable) {
+            ImGui::BulletText("CPU Process: %.1f%%", usageStats.processCpuPercent);
+            ImGui::BulletText("CPU System:  %.1f%%", usageStats.systemCpuPercent);
+        } else {
+            ImGui::BulletText("CPU: unavailable");
+        }
+        if (usageStats.processMemoryAvailable) {
+            ImGui::BulletText("Process Memory: %.1f MB", usageStats.processMemoryMB);
+        } else {
+            ImGui::BulletText("Process Memory: unavailable");
+        }
+        if (usageStats.gpuAvailable) {
+            ImGui::BulletText("GPU Memory: %.1f / %.1f MB (%.1f%%)",
+                              usageStats.gpuUsedMB, usageStats.gpuTotalMB, usageStats.gpuUsedPercent);
+        } else {
+            ImGui::BulletText("GPU Memory: unavailable");
+        }
         ImGui::End();
 
         ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_FirstUseEver);
@@ -403,6 +439,9 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
     ImGui::DestroyContext();
     glfwDestroyWindow(window);
     glfwTerminate();
+    cudaDeviceSynchronize();
+    const MemoryFootprint endFootprint = Utils::sampleMemoryFootprint();
+    // Utils::logMemoryFootprintDelta("Viewer runtime", startFootprint, endFootprint);
     GS_INFO("Shutdown complete.");
 
     return 0;

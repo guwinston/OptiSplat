@@ -36,6 +36,13 @@ throw std::runtime_error(cudaGetErrorString(ret)); \
 
 namespace optisplat {
 
+struct RenderRuntimeStats {
+    int numPoints = 0;
+    int allocatedRenderedGaussians = 0;
+    int allocatedRenderedGaussiansLimit = -1;
+    bool useExactIntersection = false;
+};
+
 struct GsConfig {
     std::string modelPath = "";
     std::string cameraPath = "";
@@ -96,6 +103,8 @@ public:
 
     virtual void setDefaultCamera(int fov, int width, int height) {}
 
+    virtual RenderRuntimeStats getRuntimeStats() const { return {}; }
+
     virtual ~IGaussianRender() = default;
     
     static std::shared_ptr<IGaussianRender> CreateRenderer(GsConfig config);
@@ -131,6 +140,9 @@ public:
 
     int* cudaRadii = nullptr;
     int* cudaCurrOffset = nullptr;
+    int* cudaExactOverflow = nullptr;
+    int allocatedRenderedCapacity = 0;
+    int capacityLimit = -1;
 
     SceneData<D> sceneData;
 
@@ -152,6 +164,8 @@ public:
     void setCudaCameraParams(const GsCamera& cameras, bool debug = false);
 
     void setCudaAuxiliary();
+
+    RenderRuntimeStats getRuntimeStats() const override;
 
 };
 

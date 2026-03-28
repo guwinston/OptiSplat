@@ -32,9 +32,9 @@ namespace CudaRasterizer
 			std::function<char* (size_t)> geometryBuffer,
 			std::function<char* (size_t)> binningBuffer,
 			std::function<char* (size_t)> imageBuffer,
-			const int P, int D, int M, int maxNumRendered,
+			const int P, int D, int M, int frameCapacity, int capacityLimit,
 			bool useExactIntersection, bool usePrefetchingPipeline, bool useTensorCore,
-			const std::vector<float>& cpuCamPos, const std::vector<float>& cpuCamRot, float znear, float zfar, int* currOffset,
+			const std::vector<float>& cpuCamPos, const std::vector<float>& cpuCamRot, float znear, float zfar, int* currOffset, int* overflowFlag,
 			bool isOrtho, bool isFisheye, float k1, float k2, float k3, float k4, 
 			const std::vector<float>& cpuBackground,
 			const int width, int height,
@@ -51,6 +51,7 @@ namespace CudaRasterizer
 			float* out_color,
 			float* depth,
 			bool antialiasing,
+			int* resolvedCapacity = nullptr,
 			int* radii = nullptr,
 			bool debug = false);
 
