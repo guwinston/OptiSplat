@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <climits>
 #include <limits>
+#include <cuda_fp16.h>
 
 
 namespace optisplat {
@@ -61,6 +62,33 @@ int clampRenderedCapacity(int64_t requested, int limit) {
 int chooseInitialExactCapacity(int numPoints, int limit) {
 	const int64_t baseline = std::max<int64_t>(1 << 20, std::min<int64_t>(static_cast<int64_t>(numPoints) * 2, 16LL << 20));
 	return clampRenderedCapacity(baseline, limit);
+}
+
+template <int D>
+std::vector<uint16_t> packSHsToHalf(const std::vector<SHs<D>>& shs) {
+	std::vector<uint16_t> packed;
+	if (shs.empty()) return packed;
+
+	const size_t numValues = shs.size() * shs[0].size();
+	packed.resize(numValues);
+	size_t dst = 0;
+	for (const auto& coeffs : shs) {
+		for (float value : coeffs) {
+			const __half halfValue = __float2half(value);
+			std::memcpy(&packed[dst], &halfValue, sizeof(uint16_t));
+			++dst;
+		}
+	}
+	return packed;
+}
+
+std::vector<uint16_t> packFloatsToHalf(const std::vector<float>& values) {
+	std::vector<uint16_t> packed(values.size());
+	for (size_t i = 0; i < values.size(); ++i) {
+		const __half halfValue = __float2half(values[i]);
+		std::memcpy(&packed[i], &halfValue, sizeof(uint16_t));
+	}
+	return packed;
 }
 
 void computeCov3D(const Eigen::Vector3f& scale, float mod, const Eigen::Vector4f& rot, float* cov3D)
@@ -165,7 +193,7 @@ GaussianRender<D>::GaussianRender(GsConfig config) {
 		sogPath = modelPath / ".cache" / this->sceneData.cacheName;
 	}
 
-	sceneData.initResource(modelPath.string(), sogPath.string(), config.bRebuildBinaryCache);
+	sceneData.initResource(modelPath.string(), sogPath.string(), config.bRebuildBinaryCache, config.bKeepCpuSceneData, config.bUseHalfPrecisionSH, config.bUseHalfPrecisionCov3DOpacity);
 	capacityLimit = config.maxNumRenderedGaussians > 0 ? config.maxNumRenderedGaussians : -1;
 	allocatedRenderedCapacity = config.bUseFlashGSExactIntersection ?
 		chooseInitialExactCapacity(sceneData.numPoints, capacityLimit) :
@@ -180,6 +208,7 @@ GaussianRender<D>::~GaussianRender() {
 	safeCudaFree(cudaImage);
 	safeCudaFree(cudaAllMap);
 	safeCudaFree(cudaGeometryState);
+	safeCudaFree(cudaActiveState);
 	safeCudaFree(cudaBinningState);
 	safeCudaFree(cudaImageState);
 	
@@ -209,8 +238,14 @@ float GaussianRender<D>::render(GsCamera& inCamera, float*& outImage, float*& ou
 		int M = (D + 1) * (D + 1);
 		const int frameCapacity = config.bUseFlashGSExactIntersection ? allocatedRenderedCapacity : config.maxNumRenderedGaussians;
 		int resolvedCapacity = frameCapacity;
-		const float* gaussianScale = sceneData.cudaGaussianCov3D ? nullptr : sceneData.cudaGaussianScale;
-		const float* gaussianRot   = sceneData.cudaGaussianCov3D ? nullptr : sceneData.cudaGaussianRot;
+		int activeGaussians = -1;
+		const float* gaussianOpacity = sceneData.cudaGaussianOpacityHalf ? nullptr : sceneData.cudaGaussianOpacity;
+		const uint16_t* gaussianOpacityHalf = sceneData.cudaGaussianOpacityHalf;
+		const bool hasPrecomputedCov3D = sceneData.cudaGaussianCov3D != nullptr || sceneData.cudaGaussianCov3DHalf != nullptr;
+		const float* gaussianScale = hasPrecomputedCov3D ? nullptr : sceneData.cudaGaussianScale;
+		const float* gaussianRot   = hasPrecomputedCov3D ? nullptr : sceneData.cudaGaussianRot;
+		const float* gaussianCov3D = sceneData.cudaGaussianCov3DHalf ? nullptr : sceneData.cudaGaussianCov3D;
+		const uint16_t* gaussianCov3DHalf = sceneData.cudaGaussianCov3DHalf;
 		float tanHalfFovx = inCamera.width / (2.0f * inCamera.fx);
 		float tanHalfFovy = inCamera.height / (2.0f * inCamera.fy);
 		bool isOrtho = inCamera.model == CameraModel::ORTHOGRAPHIC;
@@ -226,31 +261,37 @@ float GaussianRender<D>::render(GsCamera& inCamera, float*& outImage, float*& ou
 		CHECK_CUDA(
 			numRendered = CudaRasterizer::Rasterizer::forward(
 			resizeFunctional(&cudaGeometryState, allocatedGeometryState),
+			resizeFunctional(&cudaActiveState, allocatedActiveState),
 			resizeFunctional(&cudaBinningState, allocatedBinningState),
 			resizeFunctional(&cudaImageState, allocatedImageState),
 			P, D, M, frameCapacity, capacityLimit,
-			config.bUseFlashGSExactIntersection, config.bUseFlashGSPrefetchingPipeline, config.bUseTensorCore,
+			config.bUseFlashGSExactIntersection, static_cast<int>(config.exactActiveSetMode), config.bUseFlashGSPrefetchingPipeline, config.bUseTensorCore,
 			cpuCamPos, cpuCamRot, inCamera.znear, inCamera.zfar, cudaCurrOffset, cudaExactOverflow,
 			isOrtho, isFisheye, k1, k2, k3, k4,
-				cpuBackground,
-				inCamera.width, inCamera.height,
-				sceneData.cudaGaussianPoints,
-				sceneData.cudaGaussianSHs,
+			cpuBackground,
+			inCamera.width, inCamera.height,
+			sceneData.cudaGaussianPoints,
+			sceneData.cudaGaussianSHs,
+			sceneData.cudaGaussianSHsHalf,
 			nullptr,
-			sceneData.cudaGaussianOpacity,
+			gaussianOpacity,
+			gaussianOpacityHalf,
 			gaussianScale,
 			inCamera.scale,
 			gaussianRot,
-			sceneData.cudaGaussianCov3D,
-				tanHalfFovx, tanHalfFovy,
-				false,
-				cudaImage,
-				cudaAllMap,
-				false,
-				&resolvedCapacity,
-				cudaRadii,
-				debug), debug
+			gaussianCov3D,
+			gaussianCov3DHalf,
+			tanHalfFovx, tanHalfFovy,
+			false,
+			cudaImage,
+			cudaAllMap,
+			false,
+			&resolvedCapacity,
+			&activeGaussians,
+			cudaRadii,
+			debug), debug
 		);
+		lastActiveGaussians = activeGaussians;
 		if (config.bUseFlashGSExactIntersection && resolvedCapacity > allocatedRenderedCapacity) {
 			GS_INFO("Exact-intersection capacity grow: %d -> %d (num_rendered=%d)",
 				allocatedRenderedCapacity, resolvedCapacity, numRendered);
@@ -269,9 +310,11 @@ template <int D>
 RenderRuntimeStats GaussianRender<D>::getRuntimeStats() const {
 	RenderRuntimeStats stats;
 	stats.numPoints = sceneData.numPoints;
-	stats.allocatedRenderedGaussians = config.bUseFlashGSExactIntersection ? allocatedRenderedCapacity : config.maxNumRenderedGaussians;
-	stats.allocatedRenderedGaussiansLimit = capacityLimit;
+	stats.activeGaussians = lastActiveGaussians;
+	stats.allocatedRenderedInstances = config.bUseFlashGSExactIntersection ? allocatedRenderedCapacity : config.maxNumRenderedGaussians;
+	stats.allocatedRenderedInstancesLimit = capacityLimit;
 	stats.useExactIntersection = config.bUseFlashGSExactIntersection;
+	stats.exactActiveSetMode = config.exactActiveSetMode;
 	return stats;
 }
 
@@ -370,7 +413,7 @@ void GaussianRender<D>::setCudaAuxiliary() {
 
 
 template <int D>
-void SceneData<D>::initResource(std::string modelPath, std::string cacheSavePath, bool rebuildBinaryCache) {
+void SceneData<D>::initResource(std::string modelPath, std::string cacheSavePath, bool rebuildBinaryCache, bool keepCpuSceneData, bool useHalfPrecisionSH, bool useHalfPrecisionCov3DOpacity) {
 
 	auto startM = Utils::nowGPUMB();
 	auto startT = Utils::nowUs();
@@ -379,7 +422,7 @@ void SceneData<D>::initResource(std::string modelPath, std::string cacheSavePath
 	// For PLY: it may use the SOG cache (or rebuild it).
 	// For SOG: it loads directly.
 	LoadResult<D> loaded;
-	const auto loader = LoaderFactory<D>::create(modelPath, cacheSavePath, rebuildBinaryCache);
+	const auto loader = LoaderFactory<D>::create(modelPath, cacheSavePath, rebuildBinaryCache, useHalfPrecisionSH);
 	const std::string loadPath =
 		LoaderFactory<D>::resolveLoadPath(modelPath, cacheSavePath, rebuildBinaryCache);
 	loader->load(loadPath, loaded);
@@ -387,6 +430,7 @@ void SceneData<D>::initResource(std::string modelPath, std::string cacheSavePath
 	numPoints = loaded.numPoints;
 	gaussianPoints = std::move(loaded.points);
 	gaussianSHs    = std::move(loaded.shs);
+	gaussianSHsHalfHost = std::move(loaded.shsHalf);
 	gaussianOpacity= std::move(loaded.opacity);
 	gaussianScale  = std::move(loaded.scale);
 	gaussianRot    = std::move(loaded.rot);
@@ -399,7 +443,7 @@ void SceneData<D>::initResource(std::string modelPath, std::string cacheSavePath
 	// computeCov3Ds(gaussianScale.data(), 1.0f, gaussianRot.data(), gaussianCov3D.data(), numPoints);
 
 	auto tUploadStart = Utils::nowUs();
-	uploadDataToGPU();
+	uploadDataToGPU(keepCpuSceneData, useHalfPrecisionSH, useHalfPrecisionCov3DOpacity);
 	auto tUploadDone = Utils::nowUs();
 
 	GS_INFO("Total numPoints = %d", numPoints);
@@ -413,11 +457,25 @@ void SceneData<D>::initResource(std::string modelPath, std::string cacheSavePath
 
 
 template <int D>
-void SceneData<D>::uploadDataToGPU() {
+void SceneData<D>::uploadDataToGPU(bool keepCpuSceneData, bool useHalfPrecisionSH, bool useHalfPrecisionCov3DOpacity) {
 	cudaStream_t stream = 0;
 	cudaGaussianPoints = (float*)cudaMallocAndMemcpy((Pos*)gaussianPoints.data(), numPoints, stream);
-	cudaGaussianSHs = (float*)cudaMallocAndMemcpy((SHs<D>*)gaussianSHs.data(), numPoints, stream);
-	cudaGaussianOpacity = (float*)cudaMallocAndMemcpy((float*)gaussianOpacity.data(), numPoints, stream);
+	if (useHalfPrecisionSH) {
+		if (!gaussianSHsHalfHost.empty()) {
+			cudaGaussianSHsHalf = cudaMallocAndMemcpy(gaussianSHsHalfHost.data(), gaussianSHsHalfHost.size(), stream);
+		} else {
+			std::vector<uint16_t> packedSHs = packSHsToHalf<D>(gaussianSHs);
+			cudaGaussianSHsHalf = cudaMallocAndMemcpy(packedSHs.data(), packedSHs.size(), stream);
+		}
+	} else {
+		cudaGaussianSHs = (float*)cudaMallocAndMemcpy((SHs<D>*)gaussianSHs.data(), numPoints, stream);
+	}
+	if (useHalfPrecisionCov3DOpacity) {
+		std::vector<uint16_t> packedOpacity = packFloatsToHalf(gaussianOpacity);
+		cudaGaussianOpacityHalf = cudaMallocAndMemcpy(packedOpacity.data(), packedOpacity.size(), stream);
+	} else {
+		cudaGaussianOpacity = (float*)cudaMallocAndMemcpy((float*)gaussianOpacity.data(), numPoints, stream);
+	}
 	cudaGaussianScale = (float*)cudaMallocAndMemcpy((Scale*)gaussianScale.data(), numPoints, stream);
 	cudaGaussianRot = (float*)cudaMallocAndMemcpy((Rot*)gaussianRot.data(), numPoints, stream);
 
@@ -430,8 +488,26 @@ void SceneData<D>::uploadDataToGPU() {
 	launchComputeCov3D(cudaGaussianScale, cudaGaussianRot, cudaGaussianCov3D, 1.0f, numPoints, stream);
 	cudaStreamSynchronize(stream);
 
+	if (useHalfPrecisionCov3DOpacity) {
+		cudaMallocAsync(&cudaGaussianCov3DHalf, static_cast<size_t>(numPoints) * 6 * sizeof(uint16_t), stream);
+		launchPackFloatsToHalf(cudaGaussianCov3D, cudaGaussianCov3DHalf, numPoints * 6, stream);
+		cudaStreamSynchronize(stream);
+		safeCudaFree(cudaGaussianCov3D, stream);
+	}
+
 	safeCudaFree(cudaGaussianScale, stream);
 	safeCudaFree(cudaGaussianRot, stream);
+
+	if (!keepCpuSceneData) {
+		std::vector<Pos>().swap(gaussianPoints);
+		std::vector<SHs<D>>().swap(gaussianSHs);
+		std::vector<uint16_t>().swap(gaussianSHsHalfHost);
+		std::vector<float>().swap(gaussianOpacity);
+		std::vector<Scale>().swap(gaussianScale);
+		std::vector<Rot>().swap(gaussianRot);
+		std::vector<float>().swap(gaussianCov3D);
+		GS_INFO("Released CPU scene data after GPU upload.");
+	}
 }
 
 

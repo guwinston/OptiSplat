@@ -20,6 +20,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <cuda_fp16.h>
 
 #if defined(_WIN32)
 #  ifndef NOMINMAX
@@ -552,6 +553,13 @@ inline uint8_t quantizeToU8(float v, float mn, float mx) {
     if (range <= kQuantEpsilon) return 0;
     return static_cast<uint8_t>(std::lround(
         std::clamp((v - mn) / range, 0.f, 1.f) * 255.f));
+}
+
+inline uint16_t floatToHalfBits(float v) {
+    const __half halfValue = __float2half(v);
+    uint16_t bits = 0;
+    std::memcpy(&bits, &halfValue, sizeof(uint16_t));
+    return bits;
 }
 
 template <typename ValueGetter>
@@ -1116,7 +1124,12 @@ void SogLoader<D>::load(const std::string& path, LoadResult<D>& result) {
 
     result.numPoints = numPoints;
     result.points.resize(numPoints);
-    result.shs.resize(numPoints);
+    const bool outputHalfSH = preferHalfSH_;
+    if (outputHalfSH) {
+        result.shsHalf.assign(static_cast<size_t>(numPoints) * ((D + 1) * (D + 1) * 3), 0);
+    } else {
+        result.shs.resize(numPoints);
+    }
     result.opacity.resize(numPoints);
     result.scale.resize(numPoints);
     result.rot.resize(numPoints);
@@ -1276,7 +1289,7 @@ void SogLoader<D>::load(const std::string& path, LoadResult<D>& result) {
     for (int i = 0; i < 256; ++i)
         opacityLut[i] = static_cast<float>(i) / 255.f;
 
-    if (fileShDegree < D) {
+    if (!outputHalfSH && fileShDegree < D) {
         #pragma omp parallel for schedule(static)
         for (int i = 0; i < numPoints; ++i)
             result.shs[i].fill(0.f);
@@ -1299,6 +1312,7 @@ void SogLoader<D>::load(const std::string& path, LoadResult<D>& result) {
         #pragma omp for schedule(static)
         for (int i = 0; i < numPoints; ++i) {
             const size_t base = static_cast<size_t>(i) * 4;
+            const size_t shBase = static_cast<size_t>(i) * ((D + 1) * (D + 1) * 3);
 
             const uint16_t qx = static_cast<uint16_t>(meansLData[base+0]) |
                                 (static_cast<uint16_t>(meansUData[base+0]) << 8U);
@@ -1322,21 +1336,33 @@ void SogLoader<D>::load(const std::string& path, LoadResult<D>& result) {
             result.scale[i][1] = decodedScaleCB[scalesData[base+1]];
             result.scale[i][2] = decodedScaleCB[scalesData[base+2]];
 
-            result.shs[i][0] = sh0Codebook[sh0Data[base+0]];
-            result.shs[i][1] = sh0Codebook[sh0Data[base+1]];
-            result.shs[i][2] = sh0Codebook[sh0Data[base+2]];
+            const float sh0x = sh0Codebook[sh0Data[base+0]];
+            const float sh0y = sh0Codebook[sh0Data[base+1]];
+            const float sh0z = sh0Codebook[sh0Data[base+2]];
+            if (outputHalfSH) {
+                result.shsHalf[shBase + 0] = floatToHalfBits(sh0x);
+                result.shsHalf[shBase + 1] = floatToHalfBits(sh0y);
+                result.shsHalf[shBase + 2] = floatToHalfBits(sh0z);
+            } else {
+                result.shs[i][0] = sh0x;
+                result.shs[i][1] = sh0y;
+                result.shs[i][2] = sh0z;
+            }
             result.opacity[i] = opacityLut[sh0Data[base+3]];
 
             if (shNCentroidDecodedData) {
                 const int label = static_cast<int>(shNLabelsData[base+0]) |
                                   (static_cast<int>(shNLabelsData[base+1]) << 8);
                 if (label >= 0 && label < shNPaletteCount) {
-                    std::memcpy(result.shs[i].data() + 3,
-                                shNCentroidDecodedData +
-                                static_cast<size_t>(label) * shCopyFloatCount,
-                                shCopyBytes);
-                } else {
-                    std::memset(result.shs[i].data() + 3, 0, shCopyBytes);
+                    const float* shSrc = shNCentroidDecodedData +
+                                         static_cast<size_t>(label) * shCopyFloatCount;
+                    if (outputHalfSH) {
+                        for (size_t coeff = 0; coeff < shCopyFloatCount; ++coeff) {
+                            result.shsHalf[shBase + 3 + coeff] = floatToHalfBits(shSrc[coeff]);
+                        }
+                    } else {
+                        std::memcpy(result.shs[i].data() + 3, shSrc, shCopyBytes);
+                    }
                 }
             }
         }
@@ -1393,11 +1419,12 @@ template <int D>
 std::unique_ptr<IGaussianLoader<D>> LoaderFactory<D>::create(
     const std::string& modelPath,
     const std::string& sogCachePath,
-    bool               rebuildCache)
+    bool               rebuildCache,
+    bool               preferHalfSH)
 {
     if (hasExtension(modelPath, ".sog")) {
         // Already an SOG -- load it directly, no caching needed.
-        return std::make_unique<SogLoader<D>>();
+        return std::make_unique<SogLoader<D>>(preferHalfSH);
     }
 
     // For PLY (and future formats): use SOG cache when available.
@@ -1405,7 +1432,7 @@ std::unique_ptr<IGaussianLoader<D>> LoaderFactory<D>::create(
                              std::filesystem::exists(sogCachePath);
     if (!rebuildCache && cacheExists && DynamicWebP::instance().canDecode()) {
         GS_INFO("LoaderFactory: using SOG cache %s", sogCachePath.c_str());
-        return std::make_unique<SogLoader<D>>();
+        return std::make_unique<SogLoader<D>>(preferHalfSH);
     }
 
     // Cache missing or forced rebuild: load source and write cache.

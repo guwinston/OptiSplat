@@ -233,6 +233,20 @@ __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* rang
 		ranges[currtile].y = L;
 }
 
+__global__ void scatterActiveIndices(
+	int P,
+	const uint32_t* active_flags,
+	const uint32_t* active_offsets,
+	uint32_t* active_indices)
+{
+	auto idx = cg::this_grid().thread_rank();
+	if (idx >= P)
+		return;
+	if (active_flags[idx] == 0)
+		return;
+	active_indices[active_offsets[idx] - 1] = idx;
+}
+
 // Mark Gaussians as visible/invisible, based on view frustum testing
 void CudaRasterizer::Rasterizer::markVisible(
 	int P,
@@ -280,6 +294,17 @@ CudaRasterizer::ImageState CudaRasterizer::ImageState::fromChunk(char*& chunk, s
 	return img;
 }
 
+CudaRasterizer::ActiveState CudaRasterizer::ActiveState::fromChunk(char*& chunk, size_t P)
+{
+	ActiveState active;
+	obtain(chunk, active.active_flags, P, 128);
+	cub::DeviceScan::InclusiveSum(nullptr, active.scan_size, active.active_flags, active.active_flags, P);
+	obtain(chunk, active.scanning_space, active.scan_size, 128);
+	obtain(chunk, active.active_offsets, P, 128);
+	obtain(chunk, active.active_indices, P, 128);
+	return active;
+}
+
 CudaRasterizer::BinningState CudaRasterizer::BinningState::fromChunk(char*& chunk, size_t P)
 {
 	BinningState binning;
@@ -312,28 +337,33 @@ int growExactIntersectionCapacity(int currentCapacity, int requiredCount)
 // of Gaussians.
 int CudaRasterizer::Rasterizer::forward(
 	std::function<char* (size_t)> geometryBuffer,
+	std::function<char* (size_t)> activeBuffer,
 	std::function<char* (size_t)> binningBuffer,
 	std::function<char* (size_t)> imageBuffer,
 	const int P, int D, int M, int frameCapacity, int capacityLimit,
-	bool useExactIntersection, bool usePrefetchingPipeline, bool useTensorCore,
+	bool useExactIntersection, int exactActiveSetMode, bool usePrefetchingPipeline, bool useTensorCore,
 	const std::vector<float>& cpuCamPos, const std::vector<float>& cpuCamRot, float znear, float zfar, int* currOffset, int* overflowFlag,
 	bool isOrtho, bool isFisheye, float k1, float k2, float k3, float k4, 
 	const std::vector<float>& cpuBackground,
 	const int width, int height,
 	const float* means3D,
 	const float* shs,
+	const uint16_t* shsHalf,
 	const float* colors_precomp,
 	const float* opacities,
+	const uint16_t* opacitiesHalf,
 	const float* scales,
 	const float scale_modifier,
 	const float* rotations,
 	const float* cov3D_precomp,
+	const uint16_t* cov3DHalf,
 	const float tan_fovx, float tan_fovy,
 	const bool prefiltered,
 	float* out_color,
 	float* depth,
 	bool antialiasing,
 	int* resolvedCapacity,
+	int* activeGaussians,
 	int* radii,
 	bool debug)
 {
@@ -362,17 +392,9 @@ int CudaRasterizer::Rasterizer::forward(
 	const glm::mat4 viewmatrixGlm = getViewMatrix(cpuCamPosGlm, cpuCamRotGlm);
 	const glm::mat4 projmatrixGlm = getProjectionMatrix(width, height, cpuCamPosGlm, cpuCamRotGlm, focal_x, focal_y, zfar, znear, isOrtho);
 
-	const bool needsCov3DScratch = (cov3D_precomp == nullptr);
-	char* geom_size = nullptr;
-	GeometryState::fromChunk(geom_size, P, needsCov3DScratch);
-	size_t chunk_size = reinterpret_cast<size_t>(geom_size) + 128;
-	char* chunkptr = geometryBuffer(chunk_size);
-	GeometryState geomState = GeometryState::fromChunk(chunkptr, P, needsCov3DScratch);
-
-	if (radii == nullptr)
-	{
-		radii = geomState.internal_radii;
-	}
+	const bool needsCov3DScratch = (cov3D_precomp == nullptr && cov3DHalf == nullptr);
+	GeometryState geomState{};
+	size_t geometryPointCount = static_cast<size_t>(P);
 
 	dim3 tile_grid((width + BLOCK_X - 1) / BLOCK_X, (height + BLOCK_Y - 1) / BLOCK_Y, 1);
 	dim3 block(BLOCK_X, BLOCK_Y, 1);
@@ -396,8 +418,8 @@ int CudaRasterizer::Rasterizer::forward(
 
 #ifdef DEBUG
 	saveCudaArrayToFile(means3D, P * 3, "./output/means3d.bin");
-	saveCudaArrayToFile(shs, P * D * M, "./output/shs.bin");
-	saveCudaArrayToFile(opacities, P, "./output/opacities.bin");
+	if (shs != nullptr) saveCudaArrayToFile(shs, P * D * M, "./output/shs.bin");
+	if (opacities != nullptr) saveCudaArrayToFile(opacities, P, "./output/opacities.bin");
 	if (scales) saveCudaArrayToFile(scales, P * 3, "./output/scales.bin");
 	if (rotations) saveCudaArrayToFile(rotations, P * 4, "./output/rotations.bin");
 	if (cov3D_precomp) saveCudaArrayToFile(cov3D_precomp, P * 6, "./output/cov3d_precomp.bin");
@@ -408,6 +430,68 @@ int CudaRasterizer::Rasterizer::forward(
 
 	int num_rendered = 0;
 	if (useExactIntersection) {
+		const bool useExactActiveSet = exactActiveSetMode != 0;
+		const bool useCenterOnlyActiveSet = exactActiveSetMode == 2;
+		int activeCount = P;
+		const uint32_t* activeIndices = nullptr;
+		if (useExactActiveSet && P > 0) {
+			char* active_size = nullptr;
+			ActiveState::fromChunk(active_size, P);
+			size_t active_chunk_size = reinterpret_cast<size_t>(active_size) + 128;
+			char* active_chunkptr = activeBuffer(active_chunk_size);
+			ActiveState activeState = ActiveState::fromChunk(active_chunkptr, P);
+
+				CHECK_CUDA(flashgs::markActive(
+					P,
+					(glm::vec3*)means3D,
+					opacities,
+					opacitiesHalf,
+					(flashgs::cov3d_t*)cov3D_precomp,
+					cov3DHalf,
+					width, height, BLOCK_X, BLOCK_Y,
+					cpuCamPosGlm, cpuCamRotGlm, viewmatrixGlm, projmatrixGlm,
+					focal_x, focal_y, zfar, znear, tan_fovx, tan_fovy, isOrtho, isFisheye, k1, k2, k3, k4,
+					useCenterOnlyActiveSet,
+					activeState.active_flags
+				), debug);
+			CHECK_CUDA(cub::DeviceScan::InclusiveSum(
+				activeState.scanning_space,
+				activeState.scan_size,
+				activeState.active_flags,
+				activeState.active_offsets,
+				P), debug);
+			CHECK_CUDA(cudaMemcpy(&activeCount, activeState.active_offsets + P - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
+			if (activeCount > 0) {
+				scatterActiveIndices<<<(P + 255) / 256, 256>>>(
+					P, activeState.active_flags, activeState.active_offsets, activeState.active_indices);
+				activeIndices = activeState.active_indices;
+			}
+		}
+		if (activeCount <= 0) {
+			if (activeGaussians != nullptr) {
+				*activeGaussians = 0;
+			}
+			if (resolvedCapacity != nullptr) {
+				*resolvedCapacity = std::max(0, frameCapacity);
+			}
+			return 0;
+		}
+		if (activeGaussians != nullptr) {
+			*activeGaussians = activeCount;
+		}
+
+		geometryPointCount = static_cast<size_t>(std::max(activeCount, 0));
+		char* geom_size = nullptr;
+		GeometryState::fromChunk(geom_size, geometryPointCount, needsCov3DScratch);
+		size_t chunk_size = reinterpret_cast<size_t>(geom_size) + 128;
+		char* chunkptr = geometryBuffer(chunk_size);
+		geomState = GeometryState::fromChunk(chunkptr, geometryPointCount, needsCov3DScratch);
+
+		if (radii == nullptr)
+		{
+			radii = geomState.internal_radii;
+		}
+
 		int capacity = std::max(0, frameCapacity);
 		const int effectiveCapacityLimit = capacityLimit > 0 ? capacityLimit : INT_MAX;
 		bool needsRetry = false;
@@ -426,8 +510,8 @@ int CudaRasterizer::Rasterizer::forward(
 			}
 
 			CHECK_CUDA(flashgs::preprocess(
-				P, D, M,
-				(glm::vec3*)means3D, (glm::vec3*)shs, opacities, (flashgs::cov3d_t*)cov3D_precomp,
+				activeCount, D, M,
+				(glm::vec3*)means3D, (glm::vec3*)shs, shsHalf, opacities, opacitiesHalf, (flashgs::cov3d_t*)cov3D_precomp, cov3DHalf,
 				width, height, BLOCK_X, BLOCK_Y,
 				cpuCamPosGlm, cpuCamRotGlm, viewmatrixGlm, projmatrixGlm,
 				focal_x, focal_y, zfar, znear, tan_fovx, tan_fovy, isOrtho, isFisheye, k1, k2, k3, k4,
@@ -436,7 +520,8 @@ int CudaRasterizer::Rasterizer::forward(
 				capacity > 0 ? (uint32_t*)binningState.point_list_unsorted : nullptr,
 				currOffset,
 				capacity,
-				overflowFlag
+				overflowFlag,
+				activeIndices
 			), debug);
 
 			int overflowed = 0;
@@ -474,6 +559,19 @@ int CudaRasterizer::Rasterizer::forward(
 			}
 		}
 	else {
+		if (activeGaussians != nullptr) {
+			*activeGaussians = -1;
+		}
+		char* geom_size = nullptr;
+		GeometryState::fromChunk(geom_size, P, needsCov3DScratch);
+		size_t chunk_size = reinterpret_cast<size_t>(geom_size) + 128;
+		char* chunkptr = geometryBuffer(chunk_size);
+		geomState = GeometryState::fromChunk(chunkptr, P, needsCov3DScratch);
+
+		if (radii == nullptr)
+		{
+			radii = geomState.internal_radii;
+		}
 		// Run preprocessing per-Gaussian (transformation, bounding, conversion of SHs to RGB)
 		CHECK_CUDA(FORWARD::preprocess(
 			P, D, M,
@@ -482,9 +580,12 @@ int CudaRasterizer::Rasterizer::forward(
 			scale_modifier,
 			(glm::vec4*)rotations,
 			opacities,
+			opacitiesHalf,
 			shs,
+			shsHalf,
 			geomState.clamped,
 			cov3D_precomp,
+			cov3DHalf,
 			colors_precomp,
 			viewmatrixGlm, projmatrixGlm,
 			cpuCamPosGlm,

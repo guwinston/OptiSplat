@@ -284,19 +284,31 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
         
         ImGui::SetNextWindowPos(ImVec2(width - 260.0f, 10.0f), ImGuiCond_FirstUseEver);
         ImGui::Begin("Renderer Statistics", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-        ImGui::Text("Rendered Gaussians: %.0f", numRendered);
         const RenderRuntimeStats runtimeStats = renderer->getRuntimeStats();
-        if (runtimeStats.allocatedRenderedGaussians > 0) {
-            ImGui::Text("Allocated Capacity: %d", runtimeStats.allocatedRenderedGaussians);
+        ImGui::Text("Gaussians:");
+        ImGui::BulletText("Scene: %d", runtimeStats.numPoints);
+        if (runtimeStats.activeGaussians >= 0) {
+            ImGui::BulletText("Active: %d", runtimeStats.activeGaussians);
+        }
+        if (runtimeStats.useExactIntersection && runtimeStats.exactActiveSetMode != ExactActiveSetMode::Disabled) {
+            const char* modeText = runtimeStats.exactActiveSetMode == ExactActiveSetMode::CenterOnly ? "Center-only" : "Precise";
+            ImGui::BulletText("Active Set Mode: %s", modeText);
+        }
+        ImGui::Separator();
+
+        ImGui::Text("Instances:");
+        ImGui::BulletText("Rendered: %.0f", numRendered);
+        if (runtimeStats.allocatedRenderedInstances > 0) {
+            ImGui::BulletText("Allocated Capacity: %d", runtimeStats.allocatedRenderedInstances);
             if (numRendered > 0.0f) {
-                ImGui::BulletText("Capacity Usage: %.1f%%",
-                                  100.0f * numRendered / static_cast<float>(runtimeStats.allocatedRenderedGaussians));
+                ImGui::BulletText("Instance Capacity Usage: %.1f%%",
+                                  100.0f * numRendered / static_cast<float>(runtimeStats.allocatedRenderedInstances));
             }
-            if (runtimeStats.allocatedRenderedGaussiansLimit > 0) {
-                ImGui::BulletText("Capacity Limit: %d", runtimeStats.allocatedRenderedGaussiansLimit);
+            if (runtimeStats.allocatedRenderedInstancesLimit > 0) {
+                ImGui::BulletText("Instance Capacity Limit: %d", runtimeStats.allocatedRenderedInstancesLimit);
             }
         } else {
-            ImGui::Text("Allocated Capacity: dynamic");
+            ImGui::BulletText("Allocated Capacity: dynamic");
         }
         ImGui::Separator();
         

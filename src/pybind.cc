@@ -23,10 +23,20 @@ PYBIND11_MODULE(_C, m) {
         .def_readwrite("modelPath", &GsConfig::modelPath)
         .def_readwrite("cameraPath", &GsConfig::cameraPath)
         .def_readwrite("bRebuildBinaryCache", &GsConfig::bRebuildBinaryCache)
+        .def_readwrite("bKeepCpuSceneData", &GsConfig::bKeepCpuSceneData)
+        .def_readwrite("bUseHalfPrecisionSH", &GsConfig::bUseHalfPrecisionSH)
+        .def_readwrite("bUseHalfPrecisionCov3DOpacity", &GsConfig::bUseHalfPrecisionCov3DOpacity)
+        .def_readwrite("exactActiveSetMode", &GsConfig::exactActiveSetMode)
         .def_readwrite("maxNumRenderedGaussians", &GsConfig::maxNumRenderedGaussians)
         .def_readwrite("bUseFlashGSExactIntersection", &GsConfig::bUseFlashGSExactIntersection)
         .def_readwrite("bUseFlashGSPrefetchingPipeline", &GsConfig::bUseFlashGSPrefetchingPipeline)
         .def_readwrite("bUseTensorCore", &GsConfig::bUseTensorCore);
+
+    py::enum_<ExactActiveSetMode>(m, "ExactActiveSetMode")
+        .value("DISABLED", ExactActiveSetMode::Disabled)
+        .value("PRECISE", ExactActiveSetMode::Precise)
+        .value("CENTER_ONLY", ExactActiveSetMode::CenterOnly)
+        .export_values();
     // 绑定枚举
     py::enum_<CameraModel>(m, "CameraModel")
         .value("PINHOLE", CameraModel::PINHOLE)

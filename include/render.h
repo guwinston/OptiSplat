@@ -36,17 +36,29 @@ throw std::runtime_error(cudaGetErrorString(ret)); \
 
 namespace optisplat {
 
+enum class ExactActiveSetMode {
+    Disabled = 0,
+    Precise = 1,
+    CenterOnly = 2,
+};
+
 struct RenderRuntimeStats {
     int numPoints = 0;
-    int allocatedRenderedGaussians = 0;
-    int allocatedRenderedGaussiansLimit = -1;
+    int activeGaussians = -1;
+    int allocatedRenderedInstances = 0;
+    int allocatedRenderedInstancesLimit = -1;
     bool useExactIntersection = false;
+    ExactActiveSetMode exactActiveSetMode = ExactActiveSetMode::Disabled;
 };
 
 struct GsConfig {
     std::string modelPath = "";
     std::string cameraPath = "";
     bool bRebuildBinaryCache = false;
+    bool bKeepCpuSceneData = true;
+    bool bUseHalfPrecisionSH = false;
+    bool bUseHalfPrecisionCov3DOpacity = false;
+    ExactActiveSetMode exactActiveSetMode = ExactActiveSetMode::Disabled;
     int maxNumRenderedGaussians = 200000000;
     bool bUseFlashGSExactIntersection = false;
     bool bUseFlashGSPrefetchingPipeline = false;
@@ -125,11 +137,13 @@ public:
     float*  cudaImage = nullptr;
     float*  cudaAllMap = nullptr;
     void*   cudaGeometryState = nullptr;
+    void*   cudaActiveState = nullptr;
     void*   cudaBinningState = nullptr;
     void*   cudaImageState = nullptr;
     size_t  allocatedCudaImage = 0;
     size_t  allocatedCudaAllMap = 0;
     size_t  allocatedGeometryState = 0;
+    size_t  allocatedActiveState = 0;
     size_t  allocatedBinningState = 0;
     size_t  allocatedImageState = 0;
 
@@ -143,6 +157,7 @@ public:
     int* cudaExactOverflow = nullptr;
     int allocatedRenderedCapacity = 0;
     int capacityLimit = -1;
+    int lastActiveGaussians = -1;
 
     SceneData<D> sceneData;
 
@@ -173,22 +188,26 @@ template <int D>
 class SceneData {
 public:
 
-    void initResource(std::string modelPath, std::string cacheSavePath, bool rebuildBinaryCache);
+    void initResource(std::string modelPath, std::string cacheSavePath, bool rebuildBinaryCache, bool keepCpuSceneData, bool useHalfPrecisionSH, bool useHalfPrecisionCov3DOpacity);
 
-    void uploadDataToGPU();
+    void uploadDataToGPU(bool keepCpuSceneData, bool useHalfPrecisionSH, bool useHalfPrecisionCov3DOpacity);
 
     ~SceneData() {
         safeCudaFree(cudaGaussianPoints);
         safeCudaFree(cudaGaussianSHs);
+        safeCudaFree(cudaGaussianSHsHalf);
         safeCudaFree(cudaGaussianOpacity);
+        safeCudaFree(cudaGaussianOpacityHalf);
         safeCudaFree(cudaGaussianScale);
         safeCudaFree(cudaGaussianRot);
         safeCudaFree(cudaGaussianCov3D);
+        safeCudaFree(cudaGaussianCov3DHalf);
     }
 
 public:
     std::vector<Pos> gaussianPoints;
     std::vector<SHs<D>> gaussianSHs;
+    std::vector<uint16_t> gaussianSHsHalfHost;
     std::vector<float> gaussianOpacity;
     std::vector<Scale> gaussianScale;
     std::vector<Rot> gaussianRot;
@@ -201,10 +220,13 @@ public:
     int numPoints = 0;
     float*  cudaGaussianPoints = nullptr;
     float*  cudaGaussianSHs = nullptr;
+    uint16_t* cudaGaussianSHsHalf = nullptr;
     float*  cudaGaussianOpacity = nullptr;
+    uint16_t* cudaGaussianOpacityHalf = nullptr;
     float*  cudaGaussianScale = nullptr;
     float*  cudaGaussianRot = nullptr;
     float*  cudaGaussianCov3D = nullptr;
+    uint16_t* cudaGaussianCov3DHalf = nullptr;
 };
 
 template<int D>

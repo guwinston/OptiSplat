@@ -51,6 +51,17 @@ namespace CudaRasterizer
 		static ImageState fromChunk(char*& chunk, size_t N);
 	};
 
+	struct ActiveState
+	{
+		size_t scan_size;
+		char* scanning_space;
+		uint32_t* active_flags;
+		uint32_t* active_offsets;
+		uint32_t* active_indices;
+
+		static ActiveState fromChunk(char*& chunk, size_t P);
+	};
+
 	struct BinningState
 	{
 		size_t sorting_size;

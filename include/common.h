@@ -75,4 +75,10 @@ void launchComputeCov3D(
     int          N,
     cudaStream_t stream = 0);
 
+void launchPackFloatsToHalf(
+    const float* src,
+    uint16_t*    dst,
+    int          count,
+    cudaStream_t stream = 0);
+
 } // namespace optisplat

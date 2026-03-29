@@ -36,6 +36,7 @@ try:
         CameraCoordSystem, 
         IGaussianRender, 
         GsConfig, 
+        ExactActiveSetMode,
         readCamerasFromJson, 
         runViewer, 
         copyToHost
@@ -67,6 +68,7 @@ __all__ = [
     "CameraCoordSystem", 
     "IGaussianRender", 
     "GsConfig", 
+    "ExactActiveSetMode",
     "readCamerasFromJson", 
     "runViewer", 
     "copyToHost"

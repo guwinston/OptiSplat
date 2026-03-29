@@ -8,6 +8,7 @@
 
 #include "common.h"
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
 
 namespace optisplat {
 
@@ -97,6 +98,31 @@ void launchComputeCov3D(
     const int gridSize = (N + kBlockSize - 1) / kBlockSize;
     computeCov3DKernel<<<gridSize, kBlockSize, 0, stream>>>(
         cudaScale, cudaRot, cudaCov3D, mod, N);
+}
+
+__global__ void packFloatsToHalfKernel(
+    const float* __restrict__ src,
+    uint16_t*    __restrict__ dst,
+    int count)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= count) return;
+    const __half halfValue = __float2half(src[idx]);
+    uint16_t bits = 0;
+    memcpy(&bits, &halfValue, sizeof(uint16_t));
+    dst[idx] = bits;
+}
+
+void launchPackFloatsToHalf(
+    const float* src,
+    uint16_t*    dst,
+    int          count,
+    cudaStream_t stream)
+{
+    if (count <= 0) return;
+    constexpr int kBlockSize = 256;
+    const int gridSize = (count + kBlockSize - 1) / kBlockSize;
+    packFloatsToHalfKernel<<<gridSize, kBlockSize, 0, stream>>>(src, dst, count);
 }
 
 } // namespace optisplat

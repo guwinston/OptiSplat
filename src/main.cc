@@ -23,6 +23,10 @@ int main(int argc, char** argv) {
     config.modelPath = "/mnt/e/Dataset/GaussianSplattingModels/bicycle/point_cloud/iteration_30000/point_cloud.ply";
     config.cameraPath = "/mnt/e/Dataset/GaussianSplattingModels/bicycle/cameras.json";
     config.bRebuildBinaryCache = false;
+    config.bKeepCpuSceneData = false;
+    config.bUseHalfPrecisionSH = true;
+    config.bUseHalfPrecisionCov3DOpacity = true;
+    config.exactActiveSetMode = ExactActiveSetMode::CenterOnly;
     config.bUseFlashGSExactIntersection = true;
     config.bUseFlashGSPrefetchingPipeline = false;
     config.bUseTensorCore = true;

@@ -11,15 +11,38 @@
 
 #include "forward.h"
 #include "auxiliary.h"
+#include <cuda_fp16.h>
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
 namespace cg = cooperative_groups;
 
 constexpr float log2e = 1.4426950216293334961f;
 
+__device__ glm::vec3 loadSHCoeffHalf(const uint16_t* shsHalf, int idx, int max_coeffs, int coeffIdx)
+{
+	const half* sh = reinterpret_cast<const half*>(shsHalf) + (idx * max_coeffs + coeffIdx) * 3;
+	return glm::vec3(__half2float(sh[0]), __half2float(sh[1]), __half2float(sh[2]));
+}
+
+__device__ float loadHalfAsFloat(const uint16_t* data, int idx)
+{
+	const half* values = reinterpret_cast<const half*>(data);
+	return __half2float(values[idx]);
+}
+
+__device__ void loadCov3DHalf(const uint16_t* cov3DHalf, int idx, float* cov3D)
+{
+	const int base = idx * 6;
+	#pragma unroll
+	for (int i = 0; i < 6; ++i)
+	{
+		cov3D[i] = loadHalfAsFloat(cov3DHalf, base + i);
+	}
+}
+
 // Forward method for converting the input spherical harmonics
 // coefficients of each Gaussian to a simple RGB color.
-__device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, bool* clamped)
+__device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, const uint16_t* shsHalf, bool* clamped)
 {
 	// The implementation is loosely based on code for 
 	// "Differentiable Point-Based Radiance Fields for 
@@ -28,37 +51,90 @@ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const 
 	glm::vec3 dir = pos - campos;
 	dir = dir / glm::length(dir);
 
-	glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
-	glm::vec3 result = SH_C0 * sh[0];
+	glm::vec3 result;
+	if (shs != nullptr) {
+		glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
+		result = SH_C0 * sh[0];
 
-	if (deg > 0)
-	{
-		float x = dir.x;
-		float y = dir.y;
-		float z = dir.z;
-		result = result - SH_C1 * y * sh[1] + SH_C1 * z * sh[2] - SH_C1 * x * sh[3];
-
-		if (deg > 1)
+		if (deg > 0)
 		{
-			float xx = x * x, yy = y * y, zz = z * z;
-			float xy = x * y, yz = y * z, xz = x * z;
-			result = result +
-				SH_C2[0] * xy * sh[4] +
-				SH_C2[1] * yz * sh[5] +
-				SH_C2[2] * (2.0f * zz - xx - yy) * sh[6] +
-				SH_C2[3] * xz * sh[7] +
-				SH_C2[4] * (xx - yy) * sh[8];
+			float x = dir.x;
+			float y = dir.y;
+			float z = dir.z;
+			result = result - SH_C1 * y * sh[1] + SH_C1 * z * sh[2] - SH_C1 * x * sh[3];
 
-			if (deg > 2)
+			if (deg > 1)
 			{
+				float xx = x * x, yy = y * y, zz = z * z;
+				float xy = x * y, yz = y * z, xz = x * z;
 				result = result +
-					SH_C3[0] * y * (3.0f * xx - yy) * sh[9] +
-					SH_C3[1] * xy * z * sh[10] +
-					SH_C3[2] * y * (4.0f * zz - xx - yy) * sh[11] +
-					SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * sh[12] +
-					SH_C3[4] * x * (4.0f * zz - xx - yy) * sh[13] +
-					SH_C3[5] * z * (xx - yy) * sh[14] +
-					SH_C3[6] * x * (xx - 3.0f * yy) * sh[15];
+					SH_C2[0] * xy * sh[4] +
+					SH_C2[1] * yz * sh[5] +
+					SH_C2[2] * (2.0f * zz - xx - yy) * sh[6] +
+					SH_C2[3] * xz * sh[7] +
+					SH_C2[4] * (xx - yy) * sh[8];
+
+				if (deg > 2)
+				{
+					result = result +
+						SH_C3[0] * y * (3.0f * xx - yy) * sh[9] +
+						SH_C3[1] * xy * z * sh[10] +
+						SH_C3[2] * y * (4.0f * zz - xx - yy) * sh[11] +
+						SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * sh[12] +
+						SH_C3[4] * x * (4.0f * zz - xx - yy) * sh[13] +
+						SH_C3[5] * z * (xx - yy) * sh[14] +
+						SH_C3[6] * x * (xx - 3.0f * yy) * sh[15];
+				}
+			}
+		}
+	} else {
+		glm::vec3 sh0 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 0);
+		result = SH_C0 * sh0;
+
+		if (deg > 0)
+		{
+			float x = dir.x;
+			float y = dir.y;
+			float z = dir.z;
+			const glm::vec3 sh1 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 1);
+			const glm::vec3 sh2 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 2);
+			const glm::vec3 sh3 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 3);
+			result = result - SH_C1 * y * sh1 + SH_C1 * z * sh2 - SH_C1 * x * sh3;
+
+			if (deg > 1)
+			{
+				float xx = x * x, yy = y * y, zz = z * z;
+				float xy = x * y, yz = y * z, xz = x * z;
+				const glm::vec3 sh4 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 4);
+				const glm::vec3 sh5 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 5);
+				const glm::vec3 sh6 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 6);
+				const glm::vec3 sh7 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 7);
+				const glm::vec3 sh8 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 8);
+				result = result +
+					SH_C2[0] * xy * sh4 +
+					SH_C2[1] * yz * sh5 +
+					SH_C2[2] * (2.0f * zz - xx - yy) * sh6 +
+					SH_C2[3] * xz * sh7 +
+					SH_C2[4] * (xx - yy) * sh8;
+
+				if (deg > 2)
+				{
+					const glm::vec3 sh9 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 9);
+					const glm::vec3 sh10 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 10);
+					const glm::vec3 sh11 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 11);
+					const glm::vec3 sh12 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 12);
+					const glm::vec3 sh13 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 13);
+					const glm::vec3 sh14 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 14);
+					const glm::vec3 sh15 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 15);
+					result = result +
+						SH_C3[0] * y * (3.0f * xx - yy) * sh9 +
+						SH_C3[1] * xy * z * sh10 +
+						SH_C3[2] * y * (4.0f * zz - xx - yy) * sh11 +
+						SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * sh12 +
+						SH_C3[4] * x * (4.0f * zz - xx - yy) * sh13 +
+						SH_C3[5] * z * (xx - yy) * sh14 +
+						SH_C3[6] * x * (xx - 3.0f * yy) * sh15;
+				}
 			}
 		}
 	}
@@ -193,9 +269,12 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	const float scale_modifier,
 	const glm::vec4* rotations,
 	const float* opacities,
+	const uint16_t* opacitiesHalf,
 	const float* shs,
+	const uint16_t* shsHalf,
 	bool* clamped,
 	const float* cov3D_precomp,
+	const uint16_t* cov3DHalf,
 	const float* colors_precomp,
 	const glm::mat4 viewmatrix,
 	const glm::mat4 projmatrix,
@@ -259,9 +338,15 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// If 3D covariance matrix is precomputed, use it, otherwise compute
 	// from scaling and rotation parameters. 
 	const float* cov3D;
+	float cov3DDecoded[6];
 	if (cov3D_precomp != nullptr)
 	{
 		cov3D = cov3D_precomp + idx * 6;
+	}
+	else if (cov3DHalf != nullptr)
+	{
+		loadCov3DHalf(cov3DHalf, idx, cov3DDecoded);
+		cov3D = cov3DDecoded;
 	}
 	else
 	{
@@ -308,7 +393,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// spherical harmonics coefficients to RGB color.
 	if (colors_precomp == nullptr)
 	{
-		glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, cam_pos, shs, clamped);
+		glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, cam_pos, shs, shsHalf, clamped);
 		rgb_depth[idx].x = result.x;
 		rgb_depth[idx].y = result.y;
 		rgb_depth[idx].z = result.z;
@@ -319,7 +404,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	radii[idx] = my_radius;
 	points_xy_image[idx] = point_image;
 	// Inverse 2D covariance and opacity neatly pack into one float4
-	float opacity = opacities[idx];
+	float opacity = opacities != nullptr ? opacities[idx] : loadHalfAsFloat(opacitiesHalf, idx);
 
 	float log2_opacity; 
 	asm volatile("lg2.approx.f32 %0, %1;" : "=f"(log2_opacity) : "f"(opacity * h_convolution_scaling));
@@ -499,9 +584,12 @@ void FORWARD::preprocess(int P, int D, int M,
 	const float scale_modifier,
 	const glm::vec4* rotations,
 	const float* opacities,
+	const uint16_t* opacitiesHalf,
 	const float* shs,
+	const uint16_t* shsHalf,
 	bool* clamped,
 	const float* cov3D_precomp,
+	const uint16_t* cov3DHalf,
 	const float* colors_precomp,
 	const glm::mat4 viewmatrix,
 	const glm::mat4 projmatrix,
@@ -527,9 +615,12 @@ void FORWARD::preprocess(int P, int D, int M,
 		scale_modifier,
 		rotations,
 		opacities,
+		opacitiesHalf,
 		shs,
+		shsHalf,
 		clamped,
 		cov3D_precomp,
+		cov3DHalf,
 		colors_precomp,
 		viewmatrix, 
 		projmatrix,

@@ -10,6 +10,7 @@
 #include <vector>
 #include <iostream>
 #include <fstream>
+#include <cuda_fp16.h>
 
 
 namespace flashgs {
@@ -184,7 +185,29 @@ __forceinline__ __device__ float3 computeCov2D(const glm::vec3& position, float 
 	return { float(cov[0][0]), float(cov[0][1]), float(cov[1][1]) };
 }
 
-__forceinline__ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, glm::vec3 p_orig, glm::vec3 campos, const glm::vec3* shs)
+__forceinline__ __device__ glm::vec3 loadSHCoeffHalf(const uint16_t* shsHalf, int idx, int max_coeffs, int coeffIdx)
+{
+	const half* sh = reinterpret_cast<const half*>(shsHalf) + (idx * max_coeffs + coeffIdx) * 3;
+	return glm::vec3(__half2float(sh[0]), __half2float(sh[1]), __half2float(sh[2]));
+}
+
+__forceinline__ __device__ float loadHalfAsFloat(const uint16_t* data, int idx)
+{
+	const half* values = reinterpret_cast<const half*>(data);
+	return __half2float(values[idx]);
+}
+
+__forceinline__ __device__ void loadCov3DHalf(const uint16_t* cov3DsHalf, int idx, cov3d_t& cov3D)
+{
+	const int base = idx * 6;
+	#pragma unroll
+	for (int i = 0; i < 6; ++i) {
+		cov3D.s[i] = loadHalfAsFloat(cov3DsHalf, base + i);
+	}
+}
+
+__forceinline__ __device__ glm::vec3 computeColorFromSH(
+	int idx, int deg, int max_coeffs, glm::vec3 p_orig, glm::vec3 campos, const glm::vec3* shs, const uint16_t* shsHalf)
 {
 	// The implementation is loosely based on code for
 	// "Differentiable Point-Based Radiance Fields for
@@ -194,35 +217,84 @@ __forceinline__ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int ma
 	float rsqrt_l2 = fast_rsqrt_f32(l2);
 	dir *= rsqrt_l2;
 
-	// const auto& sh = ((const shs_deg3_t*)shs)[idx];
-	const glm::vec3* sh = shs + idx * max_coeffs;
-	glm::vec3 result = SH_C0 * sh[0] += 0.5f;
+	glm::vec3 result;
+	if (shs != nullptr) {
+		const glm::vec3* sh = shs + idx * max_coeffs;
+		result = SH_C0 * sh[0] + 0.5f;
 
-	if (deg > 0) {
-		float x = dir.x;
-		float y = dir.y;
-		float z = dir.z;
-		result = result - SH_C1 * y * sh[1] + SH_C1 * z * sh[2] - SH_C1 * x * sh[3];
+		if (deg > 0) {
+			float x = dir.x;
+			float y = dir.y;
+			float z = dir.z;
+			result = result - SH_C1 * y * sh[1] + SH_C1 * z * sh[2] - SH_C1 * x * sh[3];
 
-		if (deg > 1) {
-			float xx = x * x, yy = y * y, zz = z * z;
-			float xy = x * y, yz = y * z, xz = x * z;
-			result = result +
-				SH_C2[0] * xy * sh[4] +
-				SH_C2[1] * yz * sh[5] +
-				SH_C2[2] * (2.0f * zz - xx - yy) * sh[6] +
-				SH_C2[3] * xz * sh[7] +
-				SH_C2[4] * (xx - yy) * sh[8];
-
-			if (deg > 2) {
+			if (deg > 1) {
+				float xx = x * x, yy = y * y, zz = z * z;
+				float xy = x * y, yz = y * z, xz = x * z;
 				result = result +
-					SH_C3[0] * y * (3.0f * xx - yy) * sh[9] +
-					SH_C3[1] * xy * z * sh[10] +
-					SH_C3[2] * y * (4.0f * zz - xx - yy) * sh[11] +
-					SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * sh[12] +
-					SH_C3[4] * x * (4.0f * zz - xx - yy) * sh[13] +
-					SH_C3[5] * z * (xx - yy) * sh[14] +
-					SH_C3[6] * x * (xx - 3.0f * yy) * sh[15];
+					SH_C2[0] * xy * sh[4] +
+					SH_C2[1] * yz * sh[5] +
+					SH_C2[2] * (2.0f * zz - xx - yy) * sh[6] +
+					SH_C2[3] * xz * sh[7] +
+					SH_C2[4] * (xx - yy) * sh[8];
+
+				if (deg > 2) {
+					result = result +
+						SH_C3[0] * y * (3.0f * xx - yy) * sh[9] +
+						SH_C3[1] * xy * z * sh[10] +
+						SH_C3[2] * y * (4.0f * zz - xx - yy) * sh[11] +
+						SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * sh[12] +
+						SH_C3[4] * x * (4.0f * zz - xx - yy) * sh[13] +
+						SH_C3[5] * z * (xx - yy) * sh[14] +
+						SH_C3[6] * x * (xx - 3.0f * yy) * sh[15];
+				}
+			}
+		}
+	} else {
+		const glm::vec3 sh0 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 0);
+		result = SH_C0 * sh0 + 0.5f;
+
+		if (deg > 0) {
+			float x = dir.x;
+			float y = dir.y;
+			float z = dir.z;
+			const glm::vec3 sh1 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 1);
+			const glm::vec3 sh2 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 2);
+			const glm::vec3 sh3 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 3);
+			result = result - SH_C1 * y * sh1 + SH_C1 * z * sh2 - SH_C1 * x * sh3;
+
+			if (deg > 1) {
+				float xx = x * x, yy = y * y, zz = z * z;
+				float xy = x * y, yz = y * z, xz = x * z;
+				const glm::vec3 sh4 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 4);
+				const glm::vec3 sh5 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 5);
+				const glm::vec3 sh6 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 6);
+				const glm::vec3 sh7 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 7);
+				const glm::vec3 sh8 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 8);
+				result = result +
+					SH_C2[0] * xy * sh4 +
+					SH_C2[1] * yz * sh5 +
+					SH_C2[2] * (2.0f * zz - xx - yy) * sh6 +
+					SH_C2[3] * xz * sh7 +
+					SH_C2[4] * (xx - yy) * sh8;
+
+				if (deg > 2) {
+					const glm::vec3 sh9 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 9);
+					const glm::vec3 sh10 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 10);
+					const glm::vec3 sh11 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 11);
+					const glm::vec3 sh12 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 12);
+					const glm::vec3 sh13 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 13);
+					const glm::vec3 sh14 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 14);
+					const glm::vec3 sh15 = loadSHCoeffHalf(shsHalf, idx, max_coeffs, 15);
+					result = result +
+						SH_C3[0] * y * (3.0f * xx - yy) * sh9 +
+						SH_C3[1] * xy * z * sh10 +
+						SH_C3[2] * y * (4.0f * zz - xx - yy) * sh11 +
+						SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * sh12 +
+						SH_C3[4] * x * (4.0f * zz - xx - yy) * sh13 +
+						SH_C3[5] * z * (xx - yy) * sh14 +
+						SH_C3[6] * x * (xx - 3.0f * yy) * sh15;
+				}
 			}
 		}
 	}
@@ -289,11 +361,101 @@ __forceinline__ __device__ bool block_contains_center(int2 pix_min, int2 pix_max
 	return center.x >= pix_min.x && center.x <= pix_max.x && center.y >= pix_min.y && center.y <= pix_max.y;
 }
 
+__global__ void markActiveCUDA(
+	int P,
+	const glm::vec3* __restrict__ positions,
+	const float* __restrict__ opacities,
+	const uint16_t* __restrict__ opacitiesHalf,
+	cov3d_t* __restrict__ cov3Ds,
+	const uint16_t* __restrict__ cov3DsHalf,
+	const glm::mat4 viewmatrix,
+	const glm::mat4 projmatrix,
+	const int W, int H,
+	int block_x, int block_y,
+	const float tan_fovx, float tan_fovy,
+	const float focal_x, float focal_y,
+	bool is_ortho, bool is_fisheye, float k1, float k2, float k3, float k4,
+	bool centerOnly,
+	uint32_t* __restrict__ active_flags,
+	const dim3 grid)
+{
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	if (idx >= P)
+		return;
+
+	active_flags[idx] = 0;
+
+	const glm::vec3 p_orig = positions[idx];
+	const float3 p_view = transformPoint4x3(p_orig, (const float*)&viewmatrix);
+	if (p_view.z <= 0.2f)
+		return;
+
+	const float opacity = opacities != nullptr ? opacities[idx] : loadHalfAsFloat(opacitiesHalf, idx);
+	if (255.0f * opacity < 1.0f)
+		return;
+
+	float3 p_proj;
+	if (is_fisheye) {
+		float xy_len = glm::length(glm::vec2({p_view.x, p_view.y})) + 0.000001f;
+		float r = xy_len / (p_view.z + 0.000001f);
+		float theta = atan2(r, 1.0f);
+		if (abs(theta) > 3.14f * 0.44f)
+			return;
+
+		float theta2 = theta * theta;
+		float theta4 = theta2 * theta2;
+		float theta_d = theta * (1 + k1 * theta2 + k2 * theta4 + k3 * theta2 * theta4 + k4 * theta4 * theta4);
+		p_proj.x = 2 * p_view.x * focal_x * theta_d / (xy_len * W);
+		p_proj.y = 2 * p_view.y * focal_y * theta_d / (xy_len * H);
+		p_proj.z = 0;
+	}
+	else {
+		float4 p_hom = transformPoint4x4(p_orig, (const float*)&projmatrix);
+		if (is_ortho) {
+			p_proj = { p_hom.x, p_hom.y, 0 };
+		}
+		else {
+			float p_w = 1.0f / (p_hom.w + 0.0000001f);
+			p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
+		}
+	}
+
+	if (centerOnly) {
+		if (p_proj.x < -1.0f || p_proj.x > 1.0f || p_proj.y < -1.0f || p_proj.y > 1.0f) {
+			return;
+		}
+		active_flags[idx] = 1;
+		return;
+	}
+
+	cov3d_t cov3DDecoded;
+	const cov3d_t& cov3D = cov3Ds != nullptr ? cov3Ds[idx] : (loadCov3DHalf(cov3DsHalf, idx, cov3DDecoded), cov3DDecoded);
+	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix, is_ortho, is_fisheye, k1, k2, k3, k4);
+	float det = cov.x * cov.z - cov.y * cov.y;
+	if (det <= 0.0f)
+		return;
+
+	float log2_opacity = fast_lg2_f32(opacity);
+	float power = ln2 * 8.0f + ln2 * log2_opacity;
+	int width = (int)(1.414214f * fast_sqrt_f32(cov.x * power) + 1.0f);
+	int height = (int)(1.414214f * fast_sqrt_f32(cov.z * power) + 1.0f);
+	float2 point_xy = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
+	int2 rect_min;
+	int2 rect_max;
+	getRect(point_xy, width, height, rect_min, rect_max, grid, block_x, block_y);
+	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) <= 0)
+		return;
+
+	active_flags[idx] = 1;
+}
+
 __global__ void preprocessCUDA(
 	int P, int D, int M,
 	const glm::vec3* __restrict__ positions,
 	const float* __restrict__ opacities,
+	const uint16_t* __restrict__ opacitiesHalf,
 	const glm::vec3* __restrict__ shs,
+	const uint16_t* __restrict__ shsHalf,
 	const glm::mat4 viewmatrix,
 	const glm::mat4 projmatrix,
 	const glm::vec3 cam_position,
@@ -304,6 +466,7 @@ __global__ void preprocessCUDA(
 	bool is_ortho, bool is_fisheye, float k1, float k2, float k3, float k4,
 	float2* __restrict__ points_xy,
 	cov3d_t* __restrict__ cov3Ds,
+	const uint16_t* __restrict__ cov3DsHalf,
 	float4* __restrict__ rgb_depth,
 	float4* __restrict__ conic_opacity,
 	int* __restrict__ curr_offset,
@@ -311,11 +474,13 @@ __global__ void preprocessCUDA(
 	int* __restrict__ overflowed,
 	uint64_t* __restrict__ gaussian_keys_unsorted,
 	uint32_t* __restrict__ gaussian_values_unsorted,
+	const uint32_t* __restrict__ active_indices,
 	const dim3 grid)
 {
 	int lane = threadIdx.y * blockDim.x + threadIdx.x;
 	int warp_id = blockIdx.x * blockDim.z + threadIdx.z;
 	int idx_vec = warp_id * FLASHGS_WARP_SIZE + lane;
+	const uint32_t src_idx = active_indices != nullptr && idx_vec < P ? active_indices[idx_vec] : static_cast<uint32_t>(idx_vec);
 
 	// Initialize radius and touched tiles to 0. If this isn't changed,
 	// this Gaussian will not be processed further.
@@ -335,11 +500,11 @@ __global__ void preprocessCUDA(
 	{
 		do {
 			// Perform near culling, quit if outside.
-			p_orig = positions[idx_vec];
+			p_orig = positions[src_idx];
 			p_view = transformPoint4x3(p_orig, (const float*)&viewmatrix);
 			if (p_view.z <= 0.2f)
 				break;
-			opacity = opacities[idx_vec];
+			opacity = opacities != nullptr ? opacities[src_idx] : loadHalfAsFloat(opacitiesHalf, src_idx);
 			if (255.0f * opacity < 1.0f)
 				break;
 
@@ -375,7 +540,9 @@ __global__ void preprocessCUDA(
 			}
 
 			// Compute 2D screen-space covariance matrix
-			float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3Ds[idx_vec], viewmatrix, is_ortho, is_fisheye, k1, k2, k3, k4);
+			cov3d_t cov3DDecoded;
+			const cov3d_t& cov3D = cov3Ds != nullptr ? cov3Ds[src_idx] : (loadCov3DHalf(cov3DsHalf, src_idx, cov3DDecoded), cov3DDecoded);
+			float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix, is_ortho, is_fisheye, k1, k2, k3, k4);
 
 			// Invert covariance (EWA algorithm)
 			float det = (cov.x * cov.z - cov.y * cov.y);
@@ -503,7 +670,7 @@ __global__ void preprocessCUDA(
 	{
 		points_xy[idx_vec] = point_xy;
 		conic_opacity[idx_vec] = { (-0.5f * log2e) * conic.x, -log2e * conic.y, (-0.5f * log2e) * conic.z, log2_opacity };
-		auto color = computeColorFromSH(idx_vec, D, M, p_orig, cam_position, shs);
+		auto color = computeColorFromSH(src_idx, D, M, p_orig, cam_position, shs, shsHalf);
 		rgb_depth[idx_vec] = {color.r, color.g, color.b, p_view.z};
 	}
 }
@@ -512,13 +679,13 @@ __global__ void preprocessCUDA(
 } // namespace
 
 void preprocess(int P, int D, int M,
-	glm::vec3* positions, glm::vec3* shs, const float* opacities, cov3d_t* cov3Ds,
+	glm::vec3* positions, glm::vec3* shs, const uint16_t* shsHalf, const float* opacities, const uint16_t* opacitiesHalf, cov3d_t* cov3Ds, const uint16_t* cov3DsHalf,
 	int width, int height, int block_x, int block_y,
 	const glm::vec3 cam_position, const glm::mat3 cam_rotation, const glm::mat4 view_matrix, const glm::mat4 proj_matrix,
 	float focal_x, float focal_y, float zFar, float zNear, float tan_fovx, float tan_fovy, bool is_ortho, bool is_fisheye, float k1, float k2, float k3, float k4,
 	float2* points_xy, float4* rgb_depth, float4* conic_opacity,
 	uint64_t* gaussian_keys_unsorted, uint32_t* gaussian_values_unsorted,
-	int* curr_offset, int max_num_rendered, int* overflowed, cudaStream_t stream
+	int* curr_offset, int max_num_rendered, int* overflowed, const uint32_t* active_indices, cudaStream_t stream
 )
 {
 	dim3 grid((width + block_x - 1) / block_x, (height + block_y - 1) / block_y, 1);
@@ -548,7 +715,9 @@ void preprocess(int P, int D, int M,
 		P, D, M,
 		positions,
 		opacities,
+		opacitiesHalf,
 		shs,
+		shsHalf,
 		view_matrix,
 		proj_matrix,
 		cam_position,
@@ -559,6 +728,7 @@ void preprocess(int P, int D, int M,
 		is_ortho, is_fisheye, k1, k2, k3, k4,
 		points_xy,
 		cov3Ds,
+		cov3DsHalf,
 		rgb_depth,
 		conic_opacity,
 		curr_offset,
@@ -566,8 +736,36 @@ void preprocess(int P, int D, int M,
 		overflowed,
 		gaussian_keys_unsorted,
 		gaussian_values_unsorted,
+		active_indices,
 		grid);
 
+}
+
+void markActive(int P,
+	glm::vec3* positions, const float* opacities, const uint16_t* opacitiesHalf, cov3d_t* cov3Ds, const uint16_t* cov3DsHalf,
+	int width, int height, int block_x, int block_y,
+	const glm::vec3 cam_position, const glm::mat3 cam_rotation, const glm::mat4 view_matrix, const glm::mat4 proj_matrix,
+	float focal_x, float focal_y, float zFar, float zNear, float tan_fovx, float tan_fovy, bool is_ortho, bool is_fisheye, float k1, float k2, float k3, float k4,
+	bool centerOnly, uint32_t* active_flags, cudaStream_t stream)
+{
+	dim3 grid((width + block_x - 1) / block_x, (height + block_y - 1) / block_y, 1);
+	markActiveCUDA<<<(P + 255) / 256, 256, 0, stream>>>(
+		P,
+		positions,
+		opacities,
+		opacitiesHalf,
+		cov3Ds,
+		cov3DsHalf,
+		view_matrix,
+		proj_matrix,
+		width, height,
+		block_x, block_y,
+		tan_fovx, tan_fovy,
+		focal_x, focal_y,
+		is_ortho, is_fisheye, k1, k2, k3, k4,
+		centerOnly,
+		active_flags,
+		grid);
 }
 
 } // namepace flashgs

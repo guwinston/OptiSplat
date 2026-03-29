@@ -21,10 +21,14 @@ if __name__ == "__main__":
     config.modelPath = "/mnt/e/Dataset/GaussianSplattingModels/bicycle/point_cloud/iteration_30000/point_cloud.ply"
     config.cameraPath = "/mnt/e/Dataset/GaussianSplattingModels/bicycle/cameras.json"
     config.bRebuildBinaryCache = False
+    config.bKeepCpuSceneData = False
+    config.bUseHalfPrecisionSH = True
+    config.bUseHalfPrecisionCov3DOpacity = True
+    config.exactActiveSetMode = optisplat.ExactActiveSetMode.CENTER_ONLY
     config.bUseFlashGSExactIntersection = True
     config.bUseFlashGSPrefetchingPipeline = False
     config.bUseTensorCore = True
-    config.maxNumRenderedGaussians = 20000000; # 预分配的中间显存，预分配显存可以提高渲染效率，值可以根据实际情况调整
+    config.maxNumRenderedGaussians = -1; # 预分配的中间显存，预分配显存可以提高渲染效率，值可以根据实际情况调整
 
     renderer = optisplat.IGaussianRender.CreateRenderer(config)
     cameras = optisplat.readCamerasFromJson(config.cameraPath)

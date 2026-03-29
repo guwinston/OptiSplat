@@ -3,6 +3,7 @@
 #include "common.h"
 
 #include <cfloat>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -16,6 +17,7 @@ template <int D>
 struct LoadResult {
     std::vector<Pos>     points;
     std::vector<SHs<D>>  shs;
+    std::vector<uint16_t> shsHalf;
     std::vector<float>   opacity;
     std::vector<Scale>   scale;
     std::vector<Rot>     rot;
@@ -66,10 +68,16 @@ private:
 template <int D>
 class SogLoader : public IGaussianLoader<D> {
 public:
+    explicit SogLoader(bool preferHalfSH = false)
+        : preferHalfSH_(preferHalfSH) {}
+
     void load(const std::string& path, LoadResult<D>& result) override;
 
     // Read meta.json inside the SOG archive to obtain count and SH degree.
     static bool peekInfo(const std::string& path, int* outShDegree, int* outNumPoints);
+
+private:
+    bool preferHalfSH_ = false;
 };
 
 // -----------------------------------------------------------------------
@@ -90,7 +98,8 @@ public:
     static std::unique_ptr<IGaussianLoader<D>> create(
         const std::string& modelPath,
         const std::string& sogCachePath,
-        bool               rebuildCache);
+        bool               rebuildCache,
+        bool               preferHalfSH = false);
 
     // Resolve which file should actually be loaded. When a cached SOG
     // exists but libwebp decode support is unavailable, this falls back
