@@ -44,6 +44,8 @@ __forceinline__ __device__ void pixel_shader(float3& C, float&D, float& T, float
 	float2 d = { xy.x - pixf.x, xy.y - pixf.y };
 	//float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
 	float power = con_o.w + con_o.x * d.x * d.x + con_o.z * d.y * d.y + con_o.y * d.x * d.y;
+	if (power > 0.0f)
+		return;
 	float alpha;
 	asm volatile("ex2.approx.ftz.f32 %0, %1;" : "=f"(alpha) : "f"(power));
 	//alpha = min(0.99f, alpha);
@@ -286,7 +288,7 @@ __global__ void renderCUDA(
 	int point_id = range.x;
 	if (point_id < range.y)
 	{
-		int offset;
+		int offset = 0;
 		float2 xy;
 		float4 rgbd;
 		float4 con_o;
@@ -298,16 +300,16 @@ __global__ void renderCUDA(
 		{
 			offset = point_id + 3;
 		}
-		else if ((lane & 4) == 0 && point_id + 1 < range.y)
+		else if ((lane & 4) == 0 && point_id + 0 < range.y)
 		{
 			offset = point_list[point_id + 0];
 		}
-		else if (point_id + 2 < range.y)
+		else if (point_id + 1 < range.y)
 		{
 			offset = point_list[point_id + 1];
 		}
-		const float* ptr = reinterpret_cast<const float*>(reinterpret_cast<const char*>(data) + ((int64_t)offset << lg2_scale));
-		float buf;
+		const float* ptr = nullptr;
+		float buf = 0.0f;
 		bool load_enable = data != nullptr;
 		if (lane == 0)
 		{
@@ -327,6 +329,7 @@ __global__ void renderCUDA(
 		}
 		if (load_enable)
 		{
+			ptr = reinterpret_cast<const float*>(reinterpret_cast<const char*>(data) + ((int64_t)offset << lg2_scale));
 			buf = __ldg(ptr); // 0: point_list[point_id + 2], 4: point_list[point_id + 3], 8: features[point_list[point_id + 0]], 12: features[point_list[point_id + 1]]
 		}
 
@@ -351,10 +354,10 @@ __global__ void renderCUDA(
 				printf("point_id = %d\n", point_id);
 			}
 #endif
-			float ldg_buf;
-			ptr = reinterpret_cast<const float*>(reinterpret_cast<const char*>(data) + ((int64_t)offset << lg2_scale));
+			float ldg_buf = 0.0f;
 			if (load_enable)
 			{
+				ptr = reinterpret_cast<const float*>(reinterpret_cast<const char*>(data) + ((int64_t)offset << lg2_scale));
 				ldg_buf = __ldg(ptr); // 0: point_list[point_id + 4], 4: point_list[point_id + 5], 8: features[point_list[point_id + 2]], 12: features[point_list[point_id + 3]]
 #ifdef _DEBUG
 				if (lane == 0 && __float_as_int(ldg_buf) != point_list[point_id + 4])
@@ -461,10 +464,10 @@ __global__ void renderCUDA(
 				printf("point_id = %d\n", point_id);
 			}
 #endif
-			float ldg_buf;
-			ptr = reinterpret_cast<const float*>(reinterpret_cast<const char*>(data) + ((int64_t)offset << lg2_scale));
+			float ldg_buf = 0.0f;
 			if (load_enable)
 			{
+				ptr = reinterpret_cast<const float*>(reinterpret_cast<const char*>(data) + ((int64_t)offset << lg2_scale));
 				ldg_buf = __ldg(ptr); // 0: point_list[point_id + 4], 4: point_list[point_id + 5], 8: features[point_list[point_id + 2]], 12: features[point_list[point_id + 3]]
 #ifdef _DEBUG
 				if (lane == 0 && __float_as_int(ldg_buf) != point_list[point_id + 4])
@@ -558,6 +561,10 @@ __global__ void renderCUDA(
 			{
 				int pix_x = blockIdx.x * BLOCK_X + threadIdx.x * THREAD_X + j;
 				int pix_y = blockIdx.y * BLOCK_Y + threadIdx.y * THREAD_Y + i;
+				if (pix_x >= width || pix_y >= height)
+				{
+					continue;
+				}
 				int pix_id = width * pix_y + pix_x;
 				out_color[pix_id].x = bg_color.x;
 				out_color[pix_id].y = bg_color.y;
