@@ -13,13 +13,17 @@ using namespace optisplat;
 
 
 int main(int argc, char** argv) {
+    std::filesystem::path mainFilePath(__FILE__);
+    std::filesystem::path projectDir = mainFilePath.parent_path().parent_path();
+
     const MemoryFootprint startFootprint = Utils::sampleMemoryFootprint();
     Utils::logMemoryFootprint("Main start", startFootprint);
 
-    bool debug = false;
+    bool debug = true;
     bool testPerformance = true;
     bool bRunViewer = true;
 	GsConfig config;
+    // config.modelPath = (projectDir / "example_scene.json").string();
     config.modelPath = "/mnt/e/Dataset/GaussianSplattingModels/bicycle/point_cloud/iteration_30000/point_cloud.ply";
     config.cameraPath = "/mnt/e/Dataset/GaussianSplattingModels/bicycle/cameras.json";
     config.bRebuildBinaryCache = false;
@@ -66,8 +70,6 @@ int main(int argc, char** argv) {
     }
     progress.close();
 
-    std::filesystem::path mainFilePath(__FILE__);
-    std::filesystem::path projectDir = mainFilePath.parent_path().parent_path();
     std::vector<std::string> filenames = { (projectDir / "output/output.jpg").string() };
     Utils::saveImages(outImage, 1, camera.height, camera.width, filenames);
     Utils::saveAllMaps(outAllmap, 1, camera.height, camera.width, filenames);

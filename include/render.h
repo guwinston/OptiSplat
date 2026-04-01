@@ -67,7 +67,10 @@ struct GsConfig {
 };
 
 template<int D>
-class GaussianRender;
+class GaussianModelRender;
+
+template<int D>
+class GaussianSceneRender;
 
 template<int D>
 class SceneData;
@@ -128,7 +131,7 @@ public:
 
 
 template <int D>
-class GaussianRender : public IGaussianRender {
+class GaussianModelRender : public IGaussianRender {
 public:
     GsConfig config;
     float   sceneMin[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
@@ -163,9 +166,9 @@ public:
 
     cudaStream_t stream = 0;
 
-    GaussianRender(GsConfig config);
+    GaussianModelRender(GsConfig config);
     
-    ~GaussianRender();
+    ~GaussianModelRender();
 
 
     float render(GsCamera& inCamera, float*& outImage, float*& outAllMap, bool debug = false) override;
@@ -227,6 +230,84 @@ public:
     float*  cudaGaussianRot = nullptr;
     float*  cudaGaussianCov3D = nullptr;
     uint16_t* cudaGaussianCov3DHalf = nullptr;
+};
+
+template <int D>
+struct GaussianAsset {
+    std::string name;
+    std::string modelPath;
+    int basePoint = 0;
+    int numPoints = 0;
+    Eigen::Vector3f sceneMin = {FLT_MAX, FLT_MAX, FLT_MAX};
+    Eigen::Vector3f sceneMax = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+};
+
+template <int D>
+struct GaussianInstance {
+    int assetIndex = -1;
+    GaussianInstanceDesc transform;
+};
+
+template <int D>
+class GaussianSceneRender : public IGaussianRender {
+public:
+    GsConfig config;
+    float sceneMin[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    float sceneMax[3] = {FLT_MAX, FLT_MAX, FLT_MAX};
+
+    float* cudaImage = nullptr;
+    float* cudaAllMap = nullptr;
+    void* cudaGeometryState = nullptr;
+    void* cudaActiveState = nullptr;
+    void* cudaBinningState = nullptr;
+    void* cudaImageState = nullptr;
+    size_t allocatedCudaImage = 0;
+    size_t allocatedCudaAllMap = 0;
+    size_t allocatedGeometryState = 0;
+    size_t allocatedActiveState = 0;
+    size_t allocatedBinningState = 0;
+    size_t allocatedImageState = 0;
+
+    int* cudaRadii = nullptr;
+    int* cudaCurrOffset = nullptr;
+    int* cudaExactOverflow = nullptr;
+    int allocatedRenderedCapacity = 0;
+    int capacityLimit = -1;
+    int lastActiveGaussians = -1;
+    int totalScenePoints = 0;
+    int totalSourcePoints = 0;
+
+    SceneData<D> sourceSceneData;
+    std::vector<GaussianAsset<D>> assets;
+    std::vector<GaussianInstance<D>> instances;
+    std::vector<uint32_t> sourceIndicesHost;
+    std::vector<uint32_t> instanceIndicesHost;
+    std::vector<float> instanceCamPositionsHost;
+    std::vector<float> instanceViewMatricesHost;
+    std::vector<float> instanceProjMatricesHost;
+    std::vector<float> instanceDepthScalesHost;
+
+    uint32_t* cudaSourceIndices = nullptr;
+    uint32_t* cudaInstanceIndices = nullptr;
+    float* cudaInstanceCamPositions = nullptr;
+    float* cudaInstanceViewMatrices = nullptr;
+    float* cudaInstanceProjMatrices = nullptr;
+    float* cudaInstanceDepthScales = nullptr;
+
+    cudaStream_t stream = 0;
+
+    explicit GaussianSceneRender(GsConfig config);
+    GaussianSceneRender(GsConfig config, GaussianSceneDesc scene);
+    ~GaussianSceneRender();
+
+    float render(GsCamera& inCamera, float*& outImage, float*& outAllMap, bool debug = false) override;
+    void initCuda(int device = 0);
+    void setDefaultCamera(int fov, int width, int height) override;
+    void setCudaImageParams(const GsCamera& camera, bool debug = false);
+    void setCudaAuxiliary();
+    void uploadInstanceIndexData(bool debug = false);
+    void updateInstanceCameraData(const GsCamera& camera, bool debug = false);
+    RenderRuntimeStats getRuntimeStats() const override;
 };
 
 template<int D>

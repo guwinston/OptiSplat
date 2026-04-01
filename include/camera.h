@@ -96,6 +96,23 @@ struct GsCamera {
     bool isPerspective() const  { return model == CameraModel::PINHOLE; }
 };
 
+struct GaussianInstanceDesc {
+    Eigen::Vector3f translation{0.0f, 0.0f, 0.0f};
+    Eigen::Quaternionf rotation{1.0f, 0.0f, 0.0f, 0.0f};
+    float scale = 1.0f;
+    std::string name = "";
+};
+
+struct GaussianObjectDesc {
+    std::string name = "";
+    std::string modelPath = "";
+    std::vector<GaussianInstanceDesc> instances;
+};
+
+struct GaussianSceneDesc {
+    std::vector<GaussianObjectDesc> objects;
+};
+
 GsCamera createCamera(Eigen::Vector3f position, Eigen::Quaternionf quaternion, int width, int height, float fov);
 
 float fov2focal(float fovRadian, float pixels);

@@ -114,6 +114,8 @@ public:
     }
 
     static std::vector<GsCamera> readCamerasFromJson(std::string filePath);
+
+    static GaussianSceneDesc readGaussianSceneFromJson(const std::string& filePath);
     
     static void saveCamerasToJson(const std::vector<GsCamera>& cameras, const std::string& filePath);
 

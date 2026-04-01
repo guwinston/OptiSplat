@@ -107,13 +107,13 @@ __forceinline__ __device__ void getRect(const float2 p, int width, int height, i
 
 // Forward version of 2D covariance matrix computation
 __forceinline__ __device__ float3 computeCov2D(const glm::vec3& position, float focal_x, float focal_y, float tan_fovx, float tan_fovy,
-	cov3d_t cov3D, glm::mat4 viewmatrix, bool is_ortho, bool is_fisheye, float k1, float k2, float k3, float k4)
+	cov3d_t cov3D, const float* viewmatrix, bool is_ortho, bool is_fisheye, float k1, float k2, float k3, float k4)
 {
 	// The following models the steps outlined by equations 29
 	// and 31 in "EWA Splatting" (Zwicker et al., 2002).
 	// Additionally considers aspect / scaling of viewport.
 	// Transposes used to account for row-/column-major conventions.
-	float3 t = transformPoint4x3(position, (float*)&viewmatrix);
+	float3 t = transformPoint4x3(position, viewmatrix);
 
 	const float limx = 1.3f * tan_fovx;
 	const float limy = 1.3f * tan_fovy;
@@ -165,9 +165,9 @@ __forceinline__ __device__ float3 computeCov2D(const glm::vec3& position, float 
 	}
 
 	glm::mat3 W = glm::mat3(
-		((float*)&viewmatrix)[0], ((float*)&viewmatrix)[4], ((float*)&viewmatrix)[8],
-		((float*)&viewmatrix)[1], ((float*)&viewmatrix)[5], ((float*)&viewmatrix)[9],
-		((float*)&viewmatrix)[2], ((float*)&viewmatrix)[6], ((float*)&viewmatrix)[10]);
+		viewmatrix[0], viewmatrix[4], viewmatrix[8],
+		viewmatrix[1], viewmatrix[5], viewmatrix[9],
+		viewmatrix[2], viewmatrix[6], viewmatrix[10]);
 
 	glm::mat3 T = W * J;
 
@@ -305,6 +305,45 @@ __forceinline__ __device__ glm::vec3 computeColorFromSH(
 	return result;
 }
 
+__forceinline__ __device__ uint32_t resolveSourceIndex(uint32_t global_idx, const uint32_t* source_indices)
+{
+	return source_indices != nullptr ? source_indices[global_idx] : global_idx;
+}
+
+__forceinline__ __device__ int resolveInstanceIndex(uint32_t global_idx, const uint32_t* instance_indices)
+{
+	return instance_indices != nullptr ? static_cast<int>(instance_indices[global_idx]) : -1;
+}
+
+__forceinline__ __device__ const float* resolveMatrixPointer(
+	int instance_idx,
+	const float* instance_matrices,
+	const glm::mat4& fallback)
+{
+	return (instance_idx >= 0 && instance_matrices != nullptr) ?
+		(instance_matrices + instance_idx * 16) :
+		(reinterpret_cast<const float*>(&fallback));
+}
+
+__forceinline__ __device__ glm::vec3 resolveCameraPosition(
+	int instance_idx,
+	const float* instance_cam_positions,
+	const glm::vec3& fallback)
+{
+	if (instance_idx >= 0 && instance_cam_positions != nullptr) {
+		const float* values = instance_cam_positions + instance_idx * 3;
+		return glm::vec3(values[0], values[1], values[2]);
+	}
+	return fallback;
+}
+
+__forceinline__ __device__ float resolveDepthScale(
+	int instance_idx,
+	const float* instance_depth_scales)
+{
+	return (instance_idx >= 0 && instance_depth_scales != nullptr) ? instance_depth_scales[instance_idx] : 1.0f;
+}
+
 __forceinline__ __device__ bool segment_intersect_ellipse(float a, float b, float c, float d, float l, float r)
 {
 	float delta = b * b - 4.0f * a * c;
@@ -375,6 +414,12 @@ __global__ void markActiveCUDA(
 	const float tan_fovx, float tan_fovy,
 	const float focal_x, float focal_y,
 	bool is_ortho, bool is_fisheye, float k1, float k2, float k3, float k4,
+	const uint32_t* __restrict__ source_indices,
+	const uint32_t* __restrict__ instance_indices,
+	const float* __restrict__ instance_cam_positions,
+	const float* __restrict__ instance_view_matrices,
+	const float* __restrict__ instance_proj_matrices,
+	const float* __restrict__ instance_depth_scales,
 	bool centerOnly,
 	uint32_t* __restrict__ active_flags,
 	const dim3 grid)
@@ -385,12 +430,20 @@ __global__ void markActiveCUDA(
 
 	active_flags[idx] = 0;
 
-	const glm::vec3 p_orig = positions[idx];
-	const float3 p_view = transformPoint4x3(p_orig, (const float*)&viewmatrix);
+	const uint32_t src_idx = resolveSourceIndex(static_cast<uint32_t>(idx), source_indices);
+	const int instance_idx = resolveInstanceIndex(static_cast<uint32_t>(idx), instance_indices);
+	const float* view_ptr = resolveMatrixPointer(instance_idx, instance_view_matrices, viewmatrix);
+	const float* proj_ptr = resolveMatrixPointer(instance_idx, instance_proj_matrices, projmatrix);
+
+	(void)instance_cam_positions;
+	(void)instance_depth_scales;
+
+	const glm::vec3 p_orig = positions[src_idx];
+	const float3 p_view = transformPoint4x3(p_orig, view_ptr);
 	if (p_view.z <= 0.2f)
 		return;
 
-	const float opacity = opacities != nullptr ? opacities[idx] : loadHalfAsFloat(opacitiesHalf, idx);
+	const float opacity = opacities != nullptr ? opacities[src_idx] : loadHalfAsFloat(opacitiesHalf, src_idx);
 	if (255.0f * opacity < 1.0f)
 		return;
 
@@ -410,7 +463,7 @@ __global__ void markActiveCUDA(
 		p_proj.z = 0;
 	}
 	else {
-		float4 p_hom = transformPoint4x4(p_orig, (const float*)&projmatrix);
+		float4 p_hom = transformPoint4x4(p_orig, proj_ptr);
 		if (is_ortho) {
 			p_proj = { p_hom.x, p_hom.y, 0 };
 		}
@@ -429,8 +482,8 @@ __global__ void markActiveCUDA(
 	}
 
 	cov3d_t cov3DDecoded;
-	const cov3d_t& cov3D = cov3Ds != nullptr ? cov3Ds[idx] : (loadCov3DHalf(cov3DsHalf, idx, cov3DDecoded), cov3DDecoded);
-	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix, is_ortho, is_fisheye, k1, k2, k3, k4);
+	const cov3d_t& cov3D = cov3Ds != nullptr ? cov3Ds[src_idx] : (loadCov3DHalf(cov3DsHalf, src_idx, cov3DDecoded), cov3DDecoded);
+	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, view_ptr, is_ortho, is_fisheye, k1, k2, k3, k4);
 	float det = cov.x * cov.z - cov.y * cov.y;
 	if (det <= 0.0f)
 		return;
@@ -464,6 +517,12 @@ __global__ void preprocessCUDA(
 	const float tan_fovx, float tan_fovy,
 	const float focal_x, float focal_y,
 	bool is_ortho, bool is_fisheye, float k1, float k2, float k3, float k4,
+	const uint32_t* __restrict__ source_indices,
+	const uint32_t* __restrict__ instance_indices,
+	const float* __restrict__ instance_cam_positions,
+	const float* __restrict__ instance_view_matrices,
+	const float* __restrict__ instance_proj_matrices,
+	const float* __restrict__ instance_depth_scales,
 	float2* __restrict__ points_xy,
 	cov3d_t* __restrict__ cov3Ds,
 	const uint16_t* __restrict__ cov3DsHalf,
@@ -480,7 +539,16 @@ __global__ void preprocessCUDA(
 	int lane = threadIdx.y * blockDim.x + threadIdx.x;
 	int warp_id = blockIdx.x * blockDim.z + threadIdx.z;
 	int idx_vec = warp_id * FLASHGS_WARP_SIZE + lane;
-	const uint32_t src_idx = active_indices != nullptr && idx_vec < P ? active_indices[idx_vec] : static_cast<uint32_t>(idx_vec);
+	const bool lane_in_range = idx_vec < P;
+	const uint32_t global_idx = lane_in_range
+		? (active_indices != nullptr ? active_indices[idx_vec] : static_cast<uint32_t>(idx_vec))
+		: 0u;
+	const uint32_t src_idx = lane_in_range ? resolveSourceIndex(global_idx, source_indices) : 0u;
+	const int instance_idx = lane_in_range ? resolveInstanceIndex(global_idx, instance_indices) : -1;
+	const float* view_ptr = resolveMatrixPointer(instance_idx, instance_view_matrices, viewmatrix);
+	const float* proj_ptr = resolveMatrixPointer(instance_idx, instance_proj_matrices, projmatrix);
+	const glm::vec3 local_cam_position = resolveCameraPosition(instance_idx, instance_cam_positions, cam_position);
+	const float depth_scale = resolveDepthScale(instance_idx, instance_depth_scales);
 
 	// Initialize radius and touched tiles to 0. If this isn't changed,
 	// this Gaussian will not be processed further.
@@ -496,12 +564,12 @@ __global__ void preprocessCUDA(
 	float log2_opacity;
 	int2 rect_min;
 	int2 rect_max;
-	if (idx_vec < P)
+	if (lane_in_range)
 	{
 		do {
 			// Perform near culling, quit if outside.
 			p_orig = positions[src_idx];
-			p_view = transformPoint4x3(p_orig, (const float*)&viewmatrix);
+			p_view = transformPoint4x3(p_orig, view_ptr);
 			if (p_view.z <= 0.2f)
 				break;
 			opacity = opacities != nullptr ? opacities[src_idx] : loadHalfAsFloat(opacitiesHalf, src_idx);
@@ -529,7 +597,7 @@ __global__ void preprocessCUDA(
 				p_proj.z = 0;
 			}
 			else {
-				float4 p_hom = transformPoint4x4(p_orig, (const float*)&projmatrix);
+				float4 p_hom = transformPoint4x4(p_orig, proj_ptr);
 				if (is_ortho) {
 					p_proj = { p_hom.x, p_hom.y, 0}; // 正交投影无需透视除法
 				}
@@ -542,7 +610,7 @@ __global__ void preprocessCUDA(
 			// Compute 2D screen-space covariance matrix
 			cov3d_t cov3DDecoded;
 			const cov3d_t& cov3D = cov3Ds != nullptr ? cov3Ds[src_idx] : (loadCov3DHalf(cov3DsHalf, src_idx, cov3DDecoded), cov3DDecoded);
-			float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix, is_ortho, is_fisheye, k1, k2, k3, k4);
+			float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, view_ptr, is_ortho, is_fisheye, k1, k2, k3, k4);
 
 			// Invert covariance (EWA algorithm)
 			float det = (cov.x * cov.z - cov.y * cov.y);
@@ -571,7 +639,7 @@ __global__ void preprocessCUDA(
 		{
 			uint64_t key = rect_min.y * grid.x + rect_min.x;
 			key <<= 32;
-			key |= __float_as_uint(p_view.z);
+			key |= __float_as_uint(p_view.z * depth_scale);
 			int offset = atomicAdd(curr_offset, 1);
 			if (offset < max_num_rendered && gaussian_keys_unsorted != nullptr && gaussian_values_unsorted != nullptr)
 			{
@@ -611,7 +679,7 @@ __global__ void preprocessCUDA(
 			__shfl_sync(~0, rect_max.x, i),
 			__shfl_sync(~0, rect_max.y, i)
 		};
-		float my_depth = __shfl_sync(~0, p_view.z, i);
+		float my_depth = __shfl_sync(~0, p_view.z * depth_scale, i);
 		float my_power = __shfl_sync(~0, power, i);
 		int idx = warp_id * FLASHGS_WARP_SIZE + i;
 
@@ -666,12 +734,12 @@ __global__ void preprocessCUDA(
 		}
 	}
 
-	if (vertex_valid)
+	if (vertex_valid && lane_in_range)
 	{
 		points_xy[idx_vec] = point_xy;
 		conic_opacity[idx_vec] = { (-0.5f * log2e) * conic.x, -log2e * conic.y, (-0.5f * log2e) * conic.z, log2_opacity };
-		auto color = computeColorFromSH(src_idx, D, M, p_orig, cam_position, shs, shsHalf);
-		rgb_depth[idx_vec] = {color.r, color.g, color.b, p_view.z};
+		auto color = computeColorFromSH(src_idx, D, M, p_orig, local_cam_position, shs, shsHalf);
+		rgb_depth[idx_vec] = {color.r, color.g, color.b, p_view.z * depth_scale};
 	}
 }
 
@@ -683,6 +751,8 @@ void preprocess(int P, int D, int M,
 	int width, int height, int block_x, int block_y,
 	const glm::vec3 cam_position, const glm::mat3 cam_rotation, const glm::mat4 view_matrix, const glm::mat4 proj_matrix,
 	float focal_x, float focal_y, float zFar, float zNear, float tan_fovx, float tan_fovy, bool is_ortho, bool is_fisheye, float k1, float k2, float k3, float k4,
+	const uint32_t* source_indices, const uint32_t* instance_indices,
+	const float* instance_cam_positions, const float* instance_view_matrices, const float* instance_proj_matrices, const float* instance_depth_scales,
 	float2* points_xy, float4* rgb_depth, float4* conic_opacity,
 	uint64_t* gaussian_keys_unsorted, uint32_t* gaussian_values_unsorted,
 	int* curr_offset, int max_num_rendered, int* overflowed, const uint32_t* active_indices, cudaStream_t stream
@@ -726,6 +796,12 @@ void preprocess(int P, int D, int M,
 		tan_fovx, tan_fovy,
 		focal_x, focal_y,
 		is_ortho, is_fisheye, k1, k2, k3, k4,
+		source_indices,
+		instance_indices,
+		instance_cam_positions,
+		instance_view_matrices,
+		instance_proj_matrices,
+		instance_depth_scales,
 		points_xy,
 		cov3Ds,
 		cov3DsHalf,
@@ -746,6 +822,8 @@ void markActive(int P,
 	int width, int height, int block_x, int block_y,
 	const glm::vec3 cam_position, const glm::mat3 cam_rotation, const glm::mat4 view_matrix, const glm::mat4 proj_matrix,
 	float focal_x, float focal_y, float zFar, float zNear, float tan_fovx, float tan_fovy, bool is_ortho, bool is_fisheye, float k1, float k2, float k3, float k4,
+	const uint32_t* source_indices, const uint32_t* instance_indices,
+	const float* instance_cam_positions, const float* instance_view_matrices, const float* instance_proj_matrices, const float* instance_depth_scales,
 	bool centerOnly, uint32_t* active_flags, cudaStream_t stream)
 {
 	dim3 grid((width + block_x - 1) / block_x, (height + block_y - 1) / block_y, 1);
@@ -763,6 +841,12 @@ void markActive(int P,
 		tan_fovx, tan_fovy,
 		focal_x, focal_y,
 		is_ortho, is_fisheye, k1, k2, k3, k4,
+		source_indices,
+		instance_indices,
+		instance_cam_positions,
+		instance_view_matrices,
+		instance_proj_matrices,
+		instance_depth_scales,
 		centerOnly,
 		active_flags,
 		grid);

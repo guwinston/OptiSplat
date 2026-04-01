@@ -342,7 +342,9 @@ int CudaRasterizer::Rasterizer::forward(
 	std::function<char* (size_t)> imageBuffer,
 	const int P, int D, int M, int frameCapacity, int capacityLimit,
 	bool useExactIntersection, int exactActiveSetMode, bool usePrefetchingPipeline, bool useTensorCore,
-	const std::vector<float>& cpuCamPos, const std::vector<float>& cpuCamRot, float znear, float zfar, int* currOffset, int* overflowFlag,
+	const std::vector<float>& cpuCamPos, const std::vector<float>& cpuCamRot,
+	const std::vector<float>& cpuViewMatrix, const std::vector<float>& cpuProjMatrix,
+	float znear, float zfar, int* currOffset, int* overflowFlag,
 	bool isOrtho, bool isFisheye, float k1, float k2, float k3, float k4, 
 	const std::vector<float>& cpuBackground,
 	const int width, int height,
@@ -357,6 +359,12 @@ int CudaRasterizer::Rasterizer::forward(
 	const float* rotations,
 	const float* cov3D_precomp,
 	const uint16_t* cov3DHalf,
+	const uint32_t* sourceIndices,
+	const uint32_t* instanceIndices,
+	const float* instanceCamPositions,
+	const float* instanceViewMatrices,
+	const float* instanceProjMatrices,
+	const float* instanceDepthScales,
 	const float tan_fovx, float tan_fovy,
 	const bool prefiltered,
 	float* out_color,
@@ -389,8 +397,12 @@ int CudaRasterizer::Rasterizer::forward(
 
 	const glm::vec3 cpuCamPosGlm = glm::make_vec3(cpuCamPos.data());
 	const glm::mat3 cpuCamRotGlm = glm::make_mat3(cpuCamRot.data());
-	const glm::mat4 viewmatrixGlm = getViewMatrix(cpuCamPosGlm, cpuCamRotGlm);
-	const glm::mat4 projmatrixGlm = getProjectionMatrix(width, height, cpuCamPosGlm, cpuCamRotGlm, focal_x, focal_y, zfar, znear, isOrtho);
+	const glm::mat4 viewmatrixGlm = cpuViewMatrix.size() == 16 ?
+		glm::make_mat4(cpuViewMatrix.data()) :
+		getViewMatrix(cpuCamPosGlm, cpuCamRotGlm);
+	const glm::mat4 projmatrixGlm = cpuProjMatrix.size() == 16 ?
+		glm::make_mat4(cpuProjMatrix.data()) :
+		getProjectionMatrix(width, height, cpuCamPosGlm, cpuCamRotGlm, focal_x, focal_y, zfar, znear, isOrtho);
 
 	const bool needsCov3DScratch = (cov3D_precomp == nullptr && cov3DHalf == nullptr);
 	GeometryState geomState{};
@@ -449,11 +461,12 @@ int CudaRasterizer::Rasterizer::forward(
 					(flashgs::cov3d_t*)cov3D_precomp,
 					cov3DHalf,
 					width, height, BLOCK_X, BLOCK_Y,
-					cpuCamPosGlm, cpuCamRotGlm, viewmatrixGlm, projmatrixGlm,
-					focal_x, focal_y, zfar, znear, tan_fovx, tan_fovy, isOrtho, isFisheye, k1, k2, k3, k4,
-					useCenterOnlyActiveSet,
-					activeState.active_flags
-				), debug);
+				cpuCamPosGlm, cpuCamRotGlm, viewmatrixGlm, projmatrixGlm,
+				focal_x, focal_y, zfar, znear, tan_fovx, tan_fovy, isOrtho, isFisheye, k1, k2, k3, k4,
+				sourceIndices, instanceIndices, instanceCamPositions, instanceViewMatrices, instanceProjMatrices, instanceDepthScales,
+				useCenterOnlyActiveSet,
+				activeState.active_flags
+			), debug);
 			CHECK_CUDA(cub::DeviceScan::InclusiveSum(
 				activeState.scanning_space,
 				activeState.scan_size,
@@ -468,6 +481,10 @@ int CudaRasterizer::Rasterizer::forward(
 			}
 		}
 		if (activeCount <= 0) {
+			if (debug) {
+				std::cerr << "[Exact] activeCount <= 0 (P=" << P
+						  << ", exactActiveSetMode=" << exactActiveSetMode << ")" << std::endl;
+			}
 			if (activeGaussians != nullptr) {
 				*activeGaussians = 0;
 			}
@@ -515,6 +532,7 @@ int CudaRasterizer::Rasterizer::forward(
 				width, height, BLOCK_X, BLOCK_Y,
 				cpuCamPosGlm, cpuCamRotGlm, viewmatrixGlm, projmatrixGlm,
 				focal_x, focal_y, zfar, znear, tan_fovx, tan_fovy, isOrtho, isFisheye, k1, k2, k3, k4,
+				sourceIndices, instanceIndices, instanceCamPositions, instanceViewMatrices, instanceProjMatrices, instanceDepthScales,
 				(float2*)geomState.means2D, (float4*)geomState.rgb_depth, (float4*)geomState.conic_opacity,
 				capacity > 0 ? (uint64_t*)binningState.point_list_keys_unsorted : nullptr,
 				capacity > 0 ? (uint32_t*)binningState.point_list_unsorted : nullptr,
@@ -530,6 +548,12 @@ int CudaRasterizer::Rasterizer::forward(
 				CHECK_CUDA(cudaMemcpy(&overflowed, overflowFlag, sizeof(int), cudaMemcpyDeviceToHost), debug);
 			}
 			cudaDeviceSynchronize();
+			if (debug && num_rendered <= 0) {
+				std::cerr << "[Exact] preprocess produced num_rendered=" << num_rendered
+						  << " (activeCount=" << activeCount
+						  << ", capacity=" << capacity
+						  << ", overflowed=" << overflowed << ")" << std::endl;
+			}
 
 			if (num_rendered <= 0) {
 				break;
@@ -589,6 +613,12 @@ int CudaRasterizer::Rasterizer::forward(
 			colors_precomp,
 			viewmatrixGlm, projmatrixGlm,
 			cpuCamPosGlm,
+			sourceIndices,
+			instanceIndices,
+			instanceCamPositions,
+			instanceViewMatrices,
+			instanceProjMatrices,
+			instanceDepthScales,
 			width, height,
 			focal_x, focal_y,
 			tan_fovx, tan_fovy,

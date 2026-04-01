@@ -1,0 +1,22 @@
+{
+  "objects": [
+    {
+      "name": "bicycle",
+      "model_path": "/mnt/e/Dataset/GaussianSplattingModels/bicycle/point_cloud/iteration_30000/point_cloud.ply",
+      "instances": [
+        {
+          "name": "bicycle_0",
+          "translation": [0.0, 0.0, 0.0],
+          "rotation": [1.0, 0.0, 0.0, 0.0],
+          "scale": 1.0
+        },
+        {
+          "name": "bicycle_1",
+          "translation": [4.0, 0.0, 0.0],
+          "rotation": [0.9238795, 0.0, 0.3826834, 0.0],
+          "scale": 1.0
+        }
+      ]
+    }
+  ]
+}

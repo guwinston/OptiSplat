@@ -354,6 +354,91 @@ std::vector<GsCamera> Utils::readCamerasFromJson(std::string filePath) {
     return cameras;
 }
 
+GaussianSceneDesc Utils::readGaussianSceneFromJson(const std::string& filePath) {
+    std::ifstream file(filePath);
+    if (!file.is_open()) {
+        throw std::runtime_error("Failed to open Gaussian scene file: " + filePath);
+    }
+
+    nlohmann::json data;
+    file >> data;
+    if (!data.is_object() || !data.contains("objects") || !data["objects"].is_array()) {
+        throw std::runtime_error("Invalid Gaussian scene JSON, expected root.objects array: " + filePath);
+    }
+
+    auto parseVec3 = [](const nlohmann::json& value, const Eigen::Vector3f& fallback) {
+        if (!value.is_array() || value.size() != 3) return fallback;
+        return Eigen::Vector3f(value[0].get<float>(), value[1].get<float>(), value[2].get<float>());
+    };
+    auto parseQuat = [](const nlohmann::json& value) {
+        if (!value.is_array() || value.size() != 4) return Eigen::Quaternionf::Identity();
+        return Eigen::Quaternionf(
+            value[0].get<float>(),
+            value[1].get<float>(),
+            value[2].get<float>(),
+            value[3].get<float>()).normalized();
+    };
+
+    const std::filesystem::path scenePath(filePath);
+    const std::filesystem::path sceneDir = scenePath.parent_path();
+    GaussianSceneDesc scene;
+    for (const auto& objectJson : data["objects"]) {
+        if (!objectJson.is_object()) continue;
+
+        GaussianObjectDesc object;
+        if (objectJson.contains("name")) object.name = objectJson["name"].get<std::string>();
+
+        std::string modelPath;
+        if (objectJson.contains("model_path")) modelPath = objectJson["model_path"].get<std::string>();
+        else if (objectJson.contains("path")) modelPath = objectJson["path"].get<std::string>();
+        if (modelPath.empty()) {
+            throw std::runtime_error("Scene object missing model_path/path: " + filePath);
+        }
+
+        std::filesystem::path assetPath(modelPath);
+        if (assetPath.is_relative()) assetPath = sceneDir / assetPath;
+        object.modelPath = std::filesystem::absolute(assetPath).string();
+
+        if (objectJson.contains("instances") && objectJson["instances"].is_array()) {
+            for (const auto& instanceJson : objectJson["instances"]) {
+                GaussianInstanceDesc instance;
+                if (instanceJson.contains("name")) instance.name = instanceJson["name"].get<std::string>();
+                if (instanceJson.contains("translation")) instance.translation = parseVec3(instanceJson["translation"], instance.translation);
+                else if (instanceJson.contains("position")) instance.translation = parseVec3(instanceJson["position"], instance.translation);
+                if (instanceJson.contains("rotation")) instance.rotation = parseQuat(instanceJson["rotation"]);
+                else if (instanceJson.contains("quaternion")) instance.rotation = parseQuat(instanceJson["quaternion"]);
+                if (instanceJson.contains("scale")) instance.scale = instanceJson["scale"].get<float>();
+                if (instance.scale <= 0.0f) {
+                    throw std::runtime_error("Scene instance scale must be positive: " + filePath);
+                }
+                object.instances.push_back(instance);
+            }
+        } else {
+            GaussianInstanceDesc instance;
+            if (objectJson.contains("translation")) instance.translation = parseVec3(objectJson["translation"], instance.translation);
+            else if (objectJson.contains("position")) instance.translation = parseVec3(objectJson["position"], instance.translation);
+            if (objectJson.contains("rotation")) instance.rotation = parseQuat(objectJson["rotation"]);
+            else if (objectJson.contains("quaternion")) instance.rotation = parseQuat(objectJson["quaternion"]);
+            if (objectJson.contains("scale")) instance.scale = objectJson["scale"].get<float>();
+            if (instance.scale <= 0.0f) {
+                throw std::runtime_error("Scene object scale must be positive: " + filePath);
+            }
+            object.instances.push_back(instance);
+        }
+
+        if (object.instances.empty()) {
+            object.instances.push_back(GaussianInstanceDesc{});
+        }
+        scene.objects.push_back(object);
+    }
+
+    if (scene.objects.empty()) {
+        throw std::runtime_error("Gaussian scene contains no objects: " + filePath);
+    }
+    GS_INFO("Read %d Gaussian objects from %s", static_cast<int>(scene.objects.size()), filePath.c_str());
+    return scene;
+}
+
 void Utils::saveCamerasToJson(const std::vector<GsCamera>& cameras, const std::string& filePath) {
     nlohmann::json data = nlohmann::json::array();
 
