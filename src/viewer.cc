@@ -156,6 +156,9 @@ int runViewer(std::shared_ptr<IGaussianRender> renderer, std::vector<GsCamera> c
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    // The renderer output is already color-composited. Force viewer alpha to 1
+    // so ImGui does not apply the coverage alpha a second time when presenting.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_ONE);
 
     // PBO 初始化
     GLuint pbo;
